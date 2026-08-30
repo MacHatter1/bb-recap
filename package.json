@@ -17,7 +17,7 @@
     "name": "Recap",
     "description": "Generate concise, display-only summaries for BB threads.",
     "branding": {
-      "icon": "Zap"
+      "icon": "./assets/icon.svg"
     },
     "server": "./src/server.ts",
     "app": "./src/app.tsx"
@@ -57,6 +57,7 @@
   "files": [
     "README.md",
     "LICENSE",
+    "assets",
     "src",
     "dist/app.js",
     "dist/app.css",
