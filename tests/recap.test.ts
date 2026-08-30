@@ -12,7 +12,7 @@ import {
   parseDisplayMode,
   parsePositiveInteger,
   RECAP_DISPLAY_MODES,
-} from "./recap.ts";
+} from "../src/recap.ts";
 
 test("builds a bounded BB transcript and preserves the latest context", () => {
   const rows = [

@@ -13,8 +13,8 @@
     "branding": {
       "icon": "Zap"
     },
-    "server": "./server.ts",
-    "app": "./app.tsx"
+    "server": "./src/server.ts",
+    "app": "./src/app.tsx"
   },
   "dependencies": {
     "zod": "^4.3.6"
@@ -46,7 +46,7 @@
     "vaul": "^1.1.2"
   },
   "scripts": {
-    "test": "node --test recap.test.ts"
+    "test": "node --test tests/recap.test.ts"
   },
   "license": "MIT"
 }

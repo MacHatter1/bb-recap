@@ -79,7 +79,7 @@ bb plugin reload bb-recap
 
 The main files are:
 
-- `server.ts` — settings, storage, RPC, CLI, scheduling, and thread events.
-- `app.tsx` — BB thread, sidebar, command palette, and settings UI.
-- `recap.ts` — bounded transcript and prompt helpers.
-- `recap.test.ts` — tests for the pure recap helpers.
+- `src/server.ts` — settings, storage, RPC, CLI, scheduling, and thread events.
+- `src/app.tsx` — BB thread, sidebar, command palette, and settings UI.
+- `src/recap.ts` — bounded transcript and prompt helpers.
+- `tests/recap.test.ts` — tests for the pure recap helpers.
