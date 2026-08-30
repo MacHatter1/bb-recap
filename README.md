@@ -1,27 +1,85 @@
-# Grok-style recap for Pi
+# Recap for BB
 
-Adds `/recap` (and `/summarize`) to Pi. It produces a short, one-sentence “where was I?” summary using the currently selected model.
+Recap creates short, display-only summaries of BB threads. A recap is stored
+separately from the thread transcript, so it is never added to the model's
+conversation context.
 
-Unlike `sendMessage()`, the recap is stored as a display-only custom entry, so it appears in the transcript but is **not** fed back into the model context.
+## What it does
 
-## Automatic recaps
+- Generate a recap from the thread header, command palette, or CLI.
+- Generate recaps automatically after a thread has been idle.
+- Refresh a recap whenever the thread has moved on.
+- Keep the recap worker hidden and clean it up after each attempt.
 
-When enabled, Pi generates a recap automatically 30 seconds after the agent settles, provided the session has at least three user turns. It does not wait for another user message. Pi does not currently expose desktop focus events, so the extension measures inactivity from the last settled turn. Sending a prompt cancels the pending timer and starts a fresh idle window after that turn settles.
+Manual generation requires the thread to be idle. Automatic generation only
+runs for visible BB threads and waits until the configured user-turn minimum.
+Starting a new turn invalidates the previous in-thread recap until a newer one
+is generated.
 
-Configure with environment variables before starting Pi:
+## In-thread display presets
+
+Choose **Display previews** on the plugin settings page. Click any preview card
+to save it:
+
+- **Compact banner** — a quiet one-line recap above the composer. Click the
+  recap to expand or collapse it when more detail is needed.
+- **Recap card** — a larger card with timestamp, generation type, model, and a
+  refresh action.
+- **On demand** — keeps the composer clear; open the Recap panel when needed.
+
+## Settings
+
+The single **Recap behavior** card on the plugin settings page controls the
+model, automatic behavior, cleanup, prompt, and display previews. These
+settings are stored by Recap itself; use this card rather than `bb plugin config`.
+The native BB provider/model picker uses BB's live model catalog and saves the
+selected provider, model,
+reasoning level, and service tier. Without a saved selection, recaps use BB's
+current default model.
+
+`afterSeconds` is capped at 86,400 seconds. `minTurns` accepts 1–100 user
+turns. The prompt is capped at 8,000 characters. Auto-cleanup removes
+suppressed attempts and keeps the newest 1,000 visible recaps; it is enabled by
+default and runs when the plugin starts, when settings are saved, and after a
+recap is generated. Settings changes apply immediately.
+
+## CLI
 
 ```sh
-PI_GROK_RECAP_AUTO=false pi
-PI_GROK_RECAP_AFTER_SECONDS=90 pi
-PI_GROK_RECAP_MIN_TURNS=3 pi
+bb recap recap [thread-id] [--json]
+bb recap summarize [thread-id] [--json]
+bb recap show [thread-id] [--json]
+bb recap list [--limit N] [--json]
 ```
 
-By default, recaps use Pi's currently selected model with low thinking. Configure them from inside Pi:
+Leave out `thread-id` when running from a thread-aware BB CLI context. The
+`summarize` command is an alias for `recap`.
 
-```text
-/recap-setup
+## Data and safety
+
+Recaps live in the plugin's namespaced SQLite database. When auto-cleanup is
+enabled, only the latest 1,000 visible records are kept. The source transcript
+is bounded and escaped before it is sent to the worker, and it is wrapped as
+untrusted session data. Recap workers use BB's review-required permission mode
+and are archived and stopped after each attempt. Generated text is normalized
+and limited to 1,200 characters.
+
+## Development
+
+Requirements: BB 0.40 or newer and the BB plugin SDK 0.4.21 or newer.
+
+```sh
+npm install
+npm test
+npx tsc --noEmit
+bb plugin types --check .
+bb plugin build .
+bb plugin reload bb-recap
 ```
 
-This opens a TUI that shows available models, thinking levels, automatic enablement, idle delay, and minimum turns. Choices are persisted in Pi's global recap settings. Older session settings are still read for compatibility, and all settings remain excluded from model context. If no choice is made, the existing active-model/low-thinking behavior is used. The model must already be configured in Pi's model registry.
+The main files are:
 
-The extension is installed globally at `~/.pi/agent/extensions/grok-recap/` and is auto-discovered by Pi. Restart Pi or run `/reload` after changing it.
+- `server.ts` — settings, storage, RPC, CLI, scheduling, and thread events.
+- `app.tsx` — BB thread, sidebar, command palette, and settings UI.
+- `recap.ts` — bounded transcript and prompt helpers.
+- `recap.test.ts` — tests for the pure recap helpers.
