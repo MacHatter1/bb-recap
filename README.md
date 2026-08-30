@@ -2,7 +2,24 @@
 
 Recap creates short, display-only summaries of BB threads. A recap is stored
 separately from the thread transcript, so it is never added to the model's
-conversation context.
+conversation context for the original thread.
+
+## Installation
+
+After the public `v0.1.0` release is published, install the Git version from
+BB's marketplace or directly with:
+
+```sh
+bb plugin install git:https://github.com/MacHatter1/bb-recap.git@^0.1.0
+```
+
+Update a compatible release with `bb plugin update bb-recap`. The repository is
+the source of truth for releases; each release uses an immutable `vX.Y.Z` tag.
+
+Recap does not require its own account, API key, or other credentials. It uses
+the provider and model already configured in BB. The selected provider may have
+its own authentication and data-handling policy; Recap does not read or store
+those provider credentials.
 
 ## What it does
 
@@ -43,6 +60,22 @@ suppressed attempts and keeps the newest 1,000 visible recaps; it is enabled by
 default and runs when the plugin starts, when settings are saved, and after a
 recap is generated. Settings changes apply immediately.
 
+## Permissions and agent behavior
+
+Manual and automatic generation can create a hidden BB worker thread. Automatic
+generation is limited to eligible visible threads, and the worker receives a
+bounded transcript plus the configured recap instructions. The worker is
+created with BB's **Accept Edits** permission mode and is instructed to produce
+only a recap. Recap registers no agent tools and does not intentionally request
+file edits or commands, but the worker remains a normal BB thread subject to
+the provider and host permission model. Hidden is an organizational setting,
+not a security boundary, so install only plugins you trust.
+
+Recap archives and stops each worker after it finishes, including failed or
+cancelled attempts. Auto-cleanup only deletes rows from Recap's own namespaced
+database: suppressed attempts and visible records beyond the newest 1,000. It
+never deletes BB threads, messages, files, or projects.
+
 ## CLI
 
 ```sh
@@ -60,9 +93,24 @@ Leave out `thread-id` when running from a thread-aware BB CLI context. The
 Recaps live in the plugin's namespaced SQLite database. When auto-cleanup is
 enabled, only the latest 1,000 visible records are kept. The source transcript
 is bounded and escaped before it is sent to the worker, and it is wrapped as
-untrusted session data. Recap workers use BB's review-required permission mode
-and are archived and stopped after each attempt. Generated text is normalized
-and limited to 1,200 characters.
+untrusted session data. Recap has no direct network requests, filesystem
+access, subprocesses, telemetry, or synchronization service. The configured BB
+provider receives the transcript through BB's normal model runtime and may
+process it remotely according to that provider's policy. Generated text is
+normalized and limited to 1,200 characters.
+
+Recap's plugin ID is `bb-recap`, and its CLI command is `recap`. Its storage is
+namespaced and it ignores its own worker threads, but it does not coordinate
+with other recap plugins. If multiple recap plugins are enabled, each may keep
+its own separate summaries.
+
+## Maintenance
+
+Runtime dependencies are kept minimal: Recap uses `zod`; BB-shimmed UI
+packages and build/type tooling remain development-only. Dependency updates are
+manually reviewed and must preserve the BB and plugin SDK engine ranges. No
+Dependabot update is merged or released without the plugin tests, typecheck,
+managed production install, and BB bundle build passing.
 
 ## Development
 

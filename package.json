@@ -2,6 +2,12 @@
   "name": "bb-recap",
   "version": "0.1.0",
   "description": "Manual and automatic recaps for BB threads",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MacHatter1/bb-recap.git",
+    "directory": "."
+  },
+  "homepage": "https://github.com/MacHatter1/bb-recap#readme",
   "type": "module",
   "engines": {
     "bb": ">=0.40",
@@ -48,5 +54,16 @@
   "scripts": {
     "test": "node --test tests/recap.test.ts"
   },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "src",
+    "dist/app.js",
+    "dist/app.css",
+    "dist/app.meta.json",
+    "dist/server.js",
+    "dist/server.js.map",
+    "dist/server.meta.json"
+  ],
   "license": "MIT"
 }
