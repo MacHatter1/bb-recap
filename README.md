@@ -33,6 +33,19 @@ runs for visible BB threads and waits until the configured user-turn minimum.
 Starting a new turn invalidates the previous in-thread recap until a newer one
 is generated.
 
+## Showcase
+
+These screenshots use natural dummy data from a Northstar launch-planning
+thread.
+
+| Compact banner | Expanded banner |
+| --- | --- |
+| ![Compact banner](output/playwright/showcase/24-natural-compact-banner.png) | ![Expanded banner](output/playwright/showcase/25-natural-expanded-banner.png) |
+
+| Recap card | Settings |
+| --- | --- |
+| ![Recap card](output/playwright/showcase/26-natural-card.png) | ![Recap settings](output/playwright/showcase/17-settings-focus-tall.png) |
+
 ## In-thread display presets
 
 Choose **Display previews** on the plugin settings page. Click any preview card
