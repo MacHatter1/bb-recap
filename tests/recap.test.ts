@@ -12,6 +12,7 @@ import {
   parseDisplayMode,
   parsePositiveInteger,
   RECAP_DISPLAY_MODES,
+  shouldShowRecapBanner,
 } from "../src/recap.ts";
 
 test("builds a bounded BB transcript and preserves the latest context", () => {
@@ -70,4 +71,10 @@ test("bounds settings without accepting invalid values", () => {
   assert.equal(parseDisplayMode(RECAP_DISPLAY_MODES.card), RECAP_DISPLAY_MODES.card);
   assert.equal(parseDisplayMode("compact"), RECAP_DISPLAY_MODES.compact);
   assert.equal(parseDisplayMode("unknown"), RECAP_DISPLAY_MODES.compact);
+});
+
+test("hides recap banners inside inline message editors", () => {
+  assert.equal(shouldShowRecapBanner("thread", true), false);
+  assert.equal(shouldShowRecapBanner("thread", false), true);
+  assert.equal(shouldShowRecapBanner("queued-message", false), false);
 });

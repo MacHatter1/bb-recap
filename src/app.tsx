@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   definePluginApp,
   experimental_ProviderModelPicker as ProviderModelPicker,
@@ -13,7 +13,12 @@ import type {
   PluginThreadHeaderActionProps,
   PluginThreadPanelProps,
 } from "@get-bb/plugin-sdk/app";
-import { MAX_RECAP_PROMPT_CHARS, RECAP_DISPLAY_MODE_OPTIONS, RECAP_DISPLAY_MODES } from "./recap";
+import {
+  MAX_RECAP_PROMPT_CHARS,
+  RECAP_DISPLAY_MODE_OPTIONS,
+  RECAP_DISPLAY_MODES,
+  shouldShowRecapBanner,
+} from "./recap";
 import type { RecapDisplayMode } from "./recap";
 import type { ModelSelection, Recap, RecapSettings, rpcContract } from "./server";
 
@@ -307,11 +312,26 @@ function RecapComposerBannerContent({
 function RecapComposerBanner() {
   const { scope } = useComposerView();
   const { settings, isLoading } = useRecapSettings();
+  const bannerRef = useRef<HTMLDivElement>(null);
+  const [isInlineMessageEditor, setIsInlineMessageEditor] = useState(false);
 
-  if (isLoading || !settings || scope.kind !== "thread") return null;
-  const mode = settings.displayMode;
-  if (mode === RECAP_DISPLAY_MODES.onDemand) return null;
-  return <RecapComposerBannerContent threadId={scope.threadId} mode={mode} />;
+  // ponytail: BB DOM-marker fallback; switch to ComposerView edit state when the host exposes it.
+  useLayoutEffect(() => {
+    const next = Boolean(bannerRef.current?.closest("[data-inline-message-editor-frame]"));
+    setIsInlineMessageEditor((current) => current === next ? current : next);
+  }, [isInlineMessageEditor, scope.kind]);
+
+  if (scope.kind !== "thread") return null;
+  const showBanner = shouldShowRecapBanner(scope.kind, isInlineMessageEditor);
+  const content =
+    !isLoading && settings && showBanner && settings.displayMode !== RECAP_DISPLAY_MODES.onDemand
+      ? <RecapComposerBannerContent threadId={scope.threadId} mode={settings.displayMode} />
+      : null;
+  return (
+    <div ref={bannerRef} className="contents">
+      {content}
+    </div>
+  );
 }
 
 function DisplayModePreview({
