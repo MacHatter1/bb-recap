@@ -14,9 +14,21 @@ import type {
   PluginThreadPanelProps,
 } from "@get-bb/plugin-sdk/app";
 import {
+  DEFAULT_AFTER_SECONDS,
+  DEFAULT_CONCURRENT_GENERATIONS,
+  DEFAULT_MIN_TURNS,
+  DEFAULT_RECAP_PROMPT,
+  isBlankRecapPrompt,
+  MAX_CONCURRENT_GENERATIONS,
   MAX_RECAP_PROMPT_CHARS,
+  MIN_CONCURRENT_GENERATIONS,
+  normalizeRecapSettings,
+  parseBoundedInteger,
   RECAP_DISPLAY_MODE_OPTIONS,
   RECAP_DISPLAY_MODES,
+  recapFormIsDirty,
+  settingsFormStatus,
+  settingsFormStatusLabel,
   shouldShowRecapBanner,
 } from "./recap";
 import type { RecapDisplayMode } from "./recap";
@@ -51,30 +63,59 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function checkboxFromInput(
+  event: { currentTarget: EventTarget | null; target: EventTarget },
+): boolean {
+  const element = event.currentTarget instanceof HTMLInputElement
+    ? event.currentTarget
+    : event.target instanceof HTMLInputElement
+      ? event.target
+      : null;
+  return element?.checked ?? false;
+}
+
+function textFromInput(
+  event: { currentTarget: EventTarget | null; target: EventTarget },
+): string {
+  const element = event.currentTarget instanceof HTMLTextAreaElement || event.currentTarget instanceof HTMLInputElement
+    ? event.currentTarget
+    : event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement
+      ? event.target
+      : null;
+  return element?.value ?? "";
+}
+
 function useRecapSettings() {
   const rpc = useRpc<typeof rpcContract>();
   const [settings, setSettings] = useState<RecapSettings | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const rpcRef = useRef(rpc);
+  rpcRef.current = rpc;
 
-  const reload = useCallback(async () => {
-    setIsLoading(true);
+  const applySettings = useCallback((value: unknown) => {
+    setSettings(normalizeRecapSettings(value));
+  }, []);
+
+  const reload = useCallback(async (background = false) => {
+    if (!background) setIsLoading(true);
     try {
-      setSettings(await rpc.call("recap_settings_get", {}));
+      applySettings(await rpcRef.current.call("recap_settings_get", {}));
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setIsLoading(false);
+      if (!background) setIsLoading(false);
     }
-  }, [rpc]);
+  }, [applySettings]);
 
   useEffect(() => {
-    void reload();
+    void reload(false);
   }, [reload]);
-  useRealtime(RECAP_CHANGED, (payload) => {
-    if (isRecord(payload) && payload.settings === true) void reload();
-  });
+  const onSettingsSignal = useCallback((payload: unknown) => {
+    if (isRecord(payload) && payload.settings === true) void reload(true);
+  }, [reload]);
+  useRealtime(RECAP_CHANGED, onSettingsSignal);
 
   return { settings, setSettings, isLoading, error };
 }
@@ -206,7 +247,21 @@ function RecapComposerBannerContent({
     setExpanded(false);
   }, [mode, recap?.id, recap?.summary, threadId]);
 
-  if (!recap) return null;
+  if (!recap) {
+    if (!generating) return null;
+    return (
+      <div
+        className={compact
+          ? "mx-auto mb-2 flex w-full min-w-0 max-w-3xl items-center gap-2 rounded-lg border border-border bg-surface-recessed/20 px-3 py-2.5 shadow-sm"
+          : "mx-auto mb-3 w-full min-w-0 max-w-3xl rounded-xl border border-border border-l-2 border-l-foreground bg-card p-4 shadow-sm sm:p-5"}
+        role="status"
+        aria-live="polite"
+        aria-label="Generating recap"
+      >
+        <p className="text-sm text-muted-foreground">Generating recap…</p>
+      </div>
+    );
+  }
 
   if (compact) {
     const compactSummary = (
@@ -404,7 +459,67 @@ function DisplayModePreview({
   );
 }
 
+function pickerValueFromSelection(selection: ModelSelection | null): ExperimentalProviderModelPickerValue | null {
+  if (
+    !selection ||
+    typeof selection.providerId !== "string" ||
+    typeof selection.model !== "string" ||
+    typeof selection.reasoningLevel !== "string"
+  ) {
+    return null;
+  }
+  return {
+    providerId: selection.providerId,
+    model: selection.model,
+    reasoningLevel: selection.reasoningLevel,
+    ...(selection.serviceTier ? { serviceTier: selection.serviceTier } : {}),
+  };
+}
+
+function BoundedNumberInput({
+  value,
+  min,
+  max,
+  fallback,
+  disabled,
+  onCommit,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  fallback: number;
+  disabled?: boolean;
+  onCommit: (next: number) => void;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const display = text ?? String(value);
+
+  const handleChange = (event: { currentTarget: EventTarget | null; target: EventTarget }) => {
+    const raw = textFromInput(event);
+    setText(raw);
+    if (/^-?\d+$/.test(raw.trim())) {
+      onCommit(parseBoundedInteger(raw, fallback, min, max));
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      value={display}
+      disabled={disabled}
+      onChange={handleChange}
+      onBlur={() => setText(null)}
+      className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    />
+  );
+}
+
 function SettingsSection(_props: PluginSettingsSectionProps) {
+  return <SettingsSectionBody />;
+}
+
+function SettingsSectionBody() {
   const rpc = useRpc<typeof rpcContract>();
   const {
     settings,
@@ -417,35 +532,40 @@ function SettingsSection(_props: PluginSettingsSectionProps) {
   const [modelLoading, setModelLoading] = useState(true);
   const [modelSaving, setModelSaving] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<RecapSettings | null>(null);
-  const [settingsDirty, setSettingsDirty] = useState(false);
+  const [localDraft, setLocalDraft] = useState<RecapSettings | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [displayModeSaving, setDisplayModeSaving] = useState(false);
+  const [displayModeError, setDisplayModeError] = useState<string | null>(null);
+  const rpcRef = useRef(rpc);
+  rpcRef.current = rpc;
 
-  const loadModel = useCallback(async () => {
-    setModelLoading(true);
+  const loadModel = useCallback(async (background = false) => {
+    if (!background) setModelLoading(true);
     try {
-      const next = await rpc.call("recap_model_get", {});
+      const next = await rpcRef.current.call("recap_model_get", {});
       setSelection(next.selection);
       setConfigured(next.configured);
       setModelError(null);
     } catch (cause) {
       setModelError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setModelLoading(false);
+      if (!background) setModelLoading(false);
     }
-  }, [rpc]);
+  }, []);
 
   useEffect(() => {
-    void loadModel();
+    void loadModel(false);
   }, [loadModel]);
-  useRealtime(RECAP_CHANGED, (payload) => {
-    if (isRecord(payload) && payload.settings === true) void loadModel();
-  });
+  const onModelSettingsSignal = useCallback((payload: unknown) => {
+    if (isRecord(payload) && payload.settings === true) void loadModel(true);
+  }, [loadModel]);
+  useRealtime(RECAP_CHANGED, onModelSettingsSignal);
 
-  useEffect(() => {
-    if (settings && !settingsDirty) setDraft(settings);
-  }, [settings, settingsDirty]);
+  const draft = settings
+    ? { ...(localDraft ?? settings), displayMode: settings.displayMode }
+    : null;
+  const settingsDirty = localDraft !== null && settings !== null && recapFormIsDirty(localDraft, settings);
 
   const onModelChange = useCallback((next: ExperimentalProviderModelPickerValue) => {
     const nextSelection: ModelSelection = {
@@ -469,27 +589,33 @@ function SettingsSection(_props: PluginSettingsSectionProps) {
   }, [rpc]);
 
   const updateDraft = useCallback((update: (current: RecapSettings) => RecapSettings) => {
-    setDraft((current) => current ? update(current) : current);
-    setSettingsDirty(true);
+    if (!settings) return;
+    setLocalDraft((current) => {
+      const next = update(current ?? settings);
+      return recapFormIsDirty(next, settings) ? next : null;
+    });
     setSettingsError(null);
-  }, []);
+  }, [settings]);
 
   const onDisplayModeSelect = useCallback((displayMode: RecapDisplayMode) => {
-    const previous = draft?.displayMode;
-    setDraft((current) => current ? { ...current, displayMode } : current);
-    setSettingsError(null);
-    setSettingsSaving(true);
+    if (settings?.displayMode === displayMode || displayModeSaving) return;
+    const previous = settings?.displayMode;
+    setDisplayModeError(null);
+    setDisplayModeSaving(true);
     void rpc.call("recap_display_mode_set", { displayMode })
       .then((saved) => {
         setLoadedSettings((current) => current ? { ...current, displayMode: saved.displayMode } : current);
-        setDraft((current) => current ? { ...current, displayMode: saved.displayMode } : current);
       })
       .catch((cause) => {
-        if (previous) setDraft((current) => current ? { ...current, displayMode: previous } : current);
-        setSettingsError(cause instanceof Error ? cause.message : String(cause));
+        if (previous) {
+          setLoadedSettings((current) => current ? { ...current, displayMode: previous } : current);
+        }
+        setDisplayModeError(cause instanceof Error ? cause.message : String(cause));
       })
-      .finally(() => setSettingsSaving(false));
-  }, [draft?.displayMode, rpc, setLoadedSettings]);
+      .finally(() => setDisplayModeSaving(false));
+  }, [displayModeSaving, rpc, setLoadedSettings, settings?.displayMode]);
+
+  const pickerValue = pickerValueFromSelection(selection);
 
   return (
     <div className="space-y-3 text-sm">
@@ -498,9 +624,9 @@ function SettingsSection(_props: PluginSettingsSectionProps) {
       </p>
       {modelLoading ? (
         <p className="text-xs text-muted-foreground">Loading BB models…</p>
-      ) : selection ? (
+      ) : pickerValue ? (
         <ProviderModelPicker
-          value={selection}
+          value={pickerValue}
           onChange={onModelChange}
           align="start"
           className="w-full"
@@ -520,18 +646,19 @@ function SettingsSection(_props: PluginSettingsSectionProps) {
       {settingsLoading || !draft ? (
         <p className="text-xs text-muted-foreground">Loading recap settings…</p>
       ) : (
+        <>
         <form
           className="space-y-5 border-t border-border pt-4"
           onSubmit={(event) => {
             event.preventDefault();
-            if (!settingsDirty || settingsSaving || !draft) return;
+            const promptBlank = isBlankRecapPrompt(draft.prompt);
+            if (!settingsDirty || settingsSaving || promptBlank) return;
             setSettingsSaving(true);
             setSettingsError(null);
             void rpc.call("recap_settings_set", draft)
               .then((saved) => {
-                setLoadedSettings(saved);
-                setDraft(saved);
-                setSettingsDirty(false);
+                setLoadedSettings(normalizeRecapSettings(saved));
+                setLocalDraft(null);
               })
               .catch((cause) => {
                 setSettingsError(cause instanceof Error ? cause.message : String(cause));
@@ -548,7 +675,10 @@ function SettingsSection(_props: PluginSettingsSectionProps) {
               type="checkbox"
               aria-label="Automatic recaps"
               checked={draft.auto}
-              onChange={(event) => updateDraft((current) => ({ ...current, auto: event.target.checked }))}
+              onChange={(event) => {
+                const auto = checkboxFromInput(event);
+                updateDraft((current) => ({ ...current, auto }));
+              }}
               className="mt-0.5 h-4 w-4 accent-foreground"
             />
           </div>
@@ -561,91 +691,132 @@ function SettingsSection(_props: PluginSettingsSectionProps) {
               type="checkbox"
               aria-label="Auto-clean up recaps"
               checked={draft.autoCleanup}
-              onChange={(event) => updateDraft((current) => ({ ...current, autoCleanup: event.target.checked }))}
+              onChange={(event) => {
+                const autoCleanup = checkboxFromInput(event);
+                updateDraft((current) => ({ ...current, autoCleanup }));
+              }}
               className="mt-0.5 h-4 w-4 accent-foreground"
             />
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="space-y-1.5">
               <span className="block font-medium text-foreground">Idle delay (seconds)</span>
-              <input
-                type="number"
-                min={0}
-                max={86400}
-                step={1}
+              <BoundedNumberInput
                 value={draft.afterSeconds}
-                onChange={(event) => updateDraft((current) => ({
-                  ...current,
-                  afterSeconds: Number.isFinite(event.currentTarget.valueAsNumber)
-                    ? Math.max(0, Math.min(86400, Math.floor(event.currentTarget.valueAsNumber)))
-                    : 0,
-                }))}
-                className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                min={0}
+                max={86_400}
+                fallback={DEFAULT_AFTER_SECONDS}
+                disabled={settingsSaving}
+                onCommit={(afterSeconds) => updateDraft((current) => ({ ...current, afterSeconds }))}
               />
               <span className="block text-xs text-muted-foreground">Wait this long after activity stops.</span>
             </label>
             <label className="space-y-1.5">
               <span className="block font-medium text-foreground">Minimum user turns</span>
-              <input
-                type="number"
+              <BoundedNumberInput
+                value={draft.minTurns}
                 min={1}
                 max={100}
-                step={1}
-                value={draft.minTurns}
-                onChange={(event) => updateDraft((current) => ({
-                  ...current,
-                  minTurns: Number.isFinite(event.currentTarget.valueAsNumber)
-                    ? Math.max(1, Math.min(100, Math.floor(event.currentTarget.valueAsNumber)))
-                    : 1,
-                }))}
-                className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                fallback={DEFAULT_MIN_TURNS}
+                disabled={settingsSaving}
+                onCommit={(minTurns) => updateDraft((current) => ({ ...current, minTurns }))}
               />
               <span className="block text-xs text-muted-foreground">Start automatically at this many user turns.</span>
+            </label>
+            <label className="space-y-1.5">
+              <span className="block font-medium text-foreground">Max concurrent recaps</span>
+              <BoundedNumberInput
+                value={draft.maxConcurrent}
+                min={MIN_CONCURRENT_GENERATIONS}
+                max={MAX_CONCURRENT_GENERATIONS}
+                fallback={DEFAULT_CONCURRENT_GENERATIONS}
+                disabled={settingsSaving}
+                onCommit={(maxConcurrent) => updateDraft((current) => ({ ...current, maxConcurrent }))}
+              />
+              <span className="block text-xs text-muted-foreground">How many recap workers may run at once.</span>
             </label>
           </div>
           <label className="space-y-1.5">
             <span className="block font-medium text-foreground">Recap prompt</span>
             <span className="block text-xs text-muted-foreground">Instructions sent to the recap model.</span>
-            <textarea
-              value={draft.prompt}
-              rows={6}
-              maxLength={MAX_RECAP_PROMPT_CHARS}
-              spellCheck={false}
-              onChange={(event) => updateDraft((current) => ({ ...current, prompt: event.target.value }))}
-              className="w-full resize-y rounded-md border border-border bg-background px-2.5 py-2 text-sm leading-5 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            />
+            <div className="relative">
+              <textarea
+                value={draft.prompt}
+                rows={6}
+                maxLength={MAX_RECAP_PROMPT_CHARS}
+                spellCheck={false}
+                aria-describedby="recap-prompt-count"
+                onChange={(event) => {
+                  const prompt = textFromInput(event);
+                  updateDraft((current) => ({ ...current, prompt }));
+                }}
+                className="w-full resize-y rounded-md border border-border bg-background px-2.5 py-2 pb-8 text-sm leading-5 text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+              <p
+                id="recap-prompt-count"
+                className={MAX_RECAP_PROMPT_CHARS - draft.prompt.length < 200
+                  ? "pointer-events-none absolute bottom-2 right-2 rounded-md bg-background/90 px-1.5 py-0.5 text-[11px] tabular-nums text-destructive"
+                  : "pointer-events-none absolute bottom-2 right-2 rounded-md bg-background/90 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground"}
+              >
+                {draft.prompt.length.toLocaleString()} / {MAX_RECAP_PROMPT_CHARS.toLocaleString()}
+                {" · "}
+                {(MAX_RECAP_PROMPT_CHARS - draft.prompt.length).toLocaleString()} left
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-md border border-border px-2 py-1 text-xs text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => updateDraft((current) => ({ ...current, prompt: DEFAULT_RECAP_PROMPT }))}
+                disabled={draft.prompt === DEFAULT_RECAP_PROMPT || settingsSaving}
+              >
+                Reset to default
+              </button>
+            </div>
+            {isBlankRecapPrompt(draft.prompt) ? (
+              <p role="alert" className="text-sm text-destructive">
+                Prompt cannot be empty. Save is disabled so the default is not restored silently. Use Reset to default if you want the built-in instructions.
+              </p>
+            ) : null}
           </label>
-          <div className="space-y-3 border-t border-border pt-4">
-            <div>
-              <p className="font-medium text-foreground">Display previews</p>
-              <p className="text-xs text-muted-foreground">Click a preview to use that layout inside a thread.</p>
-            </div>
-            <div className="grid gap-3 md:grid-cols-3">
-              {RECAP_DISPLAY_MODE_OPTIONS.map((mode) => (
-                <DisplayModePreview
-                  key={mode}
-                  mode={mode}
-                  selected={draft.displayMode === mode}
-                  disabled={settingsSaving}
-                  onSelect={onDisplayModeSelect}
-                />
-              ))}
-            </div>
-          </div>
           {settingsError ? <p role="alert" className="text-sm text-destructive">{settingsError}</p> : null}
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center justify-between gap-3 pt-8">
             <p role="status" className="text-xs text-muted-foreground">
-              {settingsSaving ? "Saving…" : settingsDirty ? "Unsaved changes" : "Saved"}
+              {settingsFormStatusLabel(settingsFormStatus(settingsSaving, settingsDirty))}
             </p>
             <button
               type="submit"
               className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!settingsDirty || settingsSaving}
+              disabled={!settingsDirty || settingsSaving || isBlankRecapPrompt(draft.prompt)}
             >
               Save settings
             </button>
           </div>
         </form>
+        <div className="space-y-3 border-t border-border pt-4">
+          <div>
+            <p className="font-medium text-foreground">Display previews</p>
+            <p className="text-xs text-muted-foreground">
+              Click a preview to apply that layout now. Other settings still need Save.
+            </p>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {RECAP_DISPLAY_MODE_OPTIONS.map((mode) => (
+              <DisplayModePreview
+                key={mode}
+                mode={mode}
+                selected={draft.displayMode === mode}
+                disabled={displayModeSaving}
+                onSelect={onDisplayModeSelect}
+              />
+            ))}
+          </div>
+          <p role="status" className="text-xs text-muted-foreground">
+            {displayModeSaving ? "Applying layout…" : "Layout saves separately from the form above."}
+          </p>
+          {displayModeError ? <p role="alert" className="text-sm text-destructive">{displayModeError}</p> : null}
+        </div>
+        </>
       )}
     </div>
   );
