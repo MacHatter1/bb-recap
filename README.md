@@ -6,11 +6,11 @@ conversation context for the original thread.
 
 ## Installation
 
-After the public `v0.1.0` release is published, install the Git version from
+After the public `v0.2.0` release is published, install the Git version from
 BB's marketplace or directly with:
 
 ```sh
-bb plugin install git:https://github.com/MacHatter1/bb-recap.git@^0.1.0
+bb plugin install git:https://github.com/MacHatter1/bb-recap.git@^0.2.0
 ```
 
 Update a compatible release with `bb plugin update bb-recap`. The repository is
