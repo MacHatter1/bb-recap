@@ -24,14 +24,15 @@ those provider credentials.
 ## What it does
 
 - Generate a recap from the thread header, command palette, or CLI.
-- Generate recaps automatically after a thread has been idle.
+- Generate recaps automatically after a thread goes idle while Recap is running, without scanning every idle thread on startup.
 - Refresh a recap whenever the thread has moved on.
 - Keep the recap worker hidden and clean it up after each attempt.
+- Retry automatic recaps at most three times for transient worker failures. Empty model responses, stale threads, and “not enough turns” do not retry.
 
 Manual generation requires the thread to be idle. Automatic generation only
 runs for visible BB threads and waits until the configured user-turn minimum.
 Starting a new turn invalidates the previous in-thread recap until a newer one
-is generated.
+is generated. `bb recap list` and `bb recap show` both hide invalidated recaps.
 
 ## Showcase
 
@@ -68,8 +69,15 @@ reasoning level, and service tier. Without a saved selection, recaps use BB's
 current default model.
 
 `afterSeconds` is capped at 86,400 seconds. `minTurns` accepts 1–100 user
-turns. The prompt is capped at 8,000 characters. Auto-cleanup removes
-suppressed attempts and keeps the newest 1,000 visible recaps; it is enabled by
+turns. `maxConcurrent` accepts 1–5 recap workers (default 2). Lowering it does
+not cancel workers that are already running. The prompt is capped at 8,000
+characters; an empty prompt cannot be saved (use **Reset to default**). Display
+previews apply as soon as you click them and do not save the rest of the form.
+Saving the form does not overwrite a layout that was applied while the form was
+open. Empty number fields are restored on blur instead of snapping while you
+type. Auto-cleanup removes
+suppressed attempts, invalidated recaps, and visible records beyond the newest
+1,000; it is enabled by
 default and runs when the plugin starts, when settings are saved, and after a
 recap is generated. Settings changes apply immediately.
 
@@ -78,15 +86,18 @@ recap is generated. Settings changes apply immediately.
 Manual and automatic generation can create a hidden BB worker thread. Automatic
 generation is limited to eligible visible threads, and the worker receives a
 bounded transcript plus the configured recap instructions. The worker is
-created with BB's **Accept Edits** permission mode and is instructed to produce
-only a recap. Recap registers no agent tools and does not intentionally request
-file edits or commands, but the worker remains a normal BB thread subject to
-the provider and host permission model. Hidden is an organizational setting,
-not a security boundary, so install only plugins you trust.
+created with BB's **Accept Edits** permission mode — the least-permissive option
+`threads.spawn` currently accepts (there is no readonly spawn mode) — and is
+instructed to produce only a recap. Recap registers no agent tools and does not
+intentionally request file edits or commands, but the worker remains a normal BB
+thread subject to the provider and host permission model. Hidden is an
+organizational setting, not a security boundary, so install only plugins you
+trust.
 
 Recap archives and stops each worker after it finishes, including failed or
 cancelled attempts. Auto-cleanup only deletes rows from Recap's own namespaced
-database: suppressed attempts and visible records beyond the newest 1,000. It
+database: suppressed attempts, invalidated recaps, and visible records beyond
+the newest 1,000. It
 never deletes BB threads, messages, files, or projects.
 
 ## CLI
@@ -104,7 +115,8 @@ Leave out `thread-id` when running from a thread-aware BB CLI context. The
 ## Data and safety
 
 Recaps live in the plugin's namespaced SQLite database. When auto-cleanup is
-enabled, only the latest 1,000 visible records are kept. The source transcript
+enabled, only the latest 1,000 visible records are kept (invalidated and
+suppressed rows are removed). The source transcript
 is bounded and escaped before it is sent to the worker, and it is wrapped as
 untrusted session data. Recap has no direct network requests, filesystem
 access, subprocesses, telemetry, or synchronization service. The configured BB
@@ -144,3 +156,4 @@ The main files are:
 - `src/app.tsx` — BB thread, sidebar, command palette, and settings UI.
 - `src/recap.ts` — bounded transcript and prompt helpers.
 - `tests/recap.test.ts` — tests for the pure recap helpers.
+- `tests/storage.test.ts` — SQLite tests for list, invalidation, and cleanup.

@@ -33,10 +33,52 @@ const UNTRUSTED_TRANSCRIPT_INSTRUCTIONS =
 
 export const MAX_RECAP_PROMPT_CHARS = 8_000;
 
+export function isBlankRecapPrompt(raw: unknown): boolean {
+  return typeof raw !== "string" || raw.trim().length === 0;
+}
+
+export function recapPromptWouldReset(raw: unknown): boolean {
+  if (typeof raw !== "string") return true;
+  const prompt = raw.trim();
+  return prompt.length === 0 || prompt.length > MAX_RECAP_PROMPT_CHARS;
+}
+
+export type SettingsFormStatus = "saving" | "unsaved" | "saved";
+
+export function settingsFormStatus(formSaving: boolean, formDirty: boolean): SettingsFormStatus {
+  if (formSaving) return "saving";
+  if (formDirty) return "unsaved";
+  return "saved";
+}
+
+export function settingsFormStatusLabel(status: SettingsFormStatus): string {
+  if (status === "saving") return "Saving…";
+  if (status === "unsaved") return "Unsaved changes";
+  return "Saved";
+}
+
+export type RecapFormSnapshot = {
+  auto: boolean;
+  autoCleanup: boolean;
+  afterSeconds: number;
+  minTurns: number;
+  maxConcurrent: number;
+  prompt: string;
+};
+
+export function recapFormIsDirty(draft: RecapFormSnapshot, saved: RecapFormSnapshot): boolean {
+  return draft.auto !== saved.auto
+    || draft.autoCleanup !== saved.autoCleanup
+    || draft.afterSeconds !== saved.afterSeconds
+    || draft.minTurns !== saved.minTurns
+    || draft.maxConcurrent !== saved.maxConcurrent
+    || draft.prompt !== saved.prompt;
+}
+
 export function normalizeRecapPrompt(raw: unknown): string {
   if (typeof raw !== "string") return DEFAULT_RECAP_PROMPT;
   const prompt = raw.trim();
-  return prompt.length > MAX_RECAP_PROMPT_CHARS || prompt.length === 0 ? DEFAULT_RECAP_PROMPT : prompt;
+  return recapPromptWouldReset(prompt) ? DEFAULT_RECAP_PROMPT : prompt;
 }
 
 function escapeTranscript(text: string): string {
@@ -180,9 +222,261 @@ export function parseBoundedInteger(raw: string, fallback: number, min: number, 
   return Math.min(value, max);
 }
 
+export function parseClampedInteger(raw: string, fallback: number, min: number, max: number): number {
+  if (!/^-?\d+$/.test(raw.trim())) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) return fallback;
+  return Math.max(min, Math.min(value, max));
+}
+
 export function parsePositiveInteger(raw: string): number | null {
   const normalized = raw.trim();
   if (!/^[1-9]\d*$/.test(normalized)) return null;
   const value = Number(normalized);
   return Number.isSafeInteger(value) ? value : null;
+}
+
+export const DEFAULT_CONCURRENT_GENERATIONS = 2;
+export const MIN_CONCURRENT_GENERATIONS = 1;
+export const MAX_CONCURRENT_GENERATIONS = 5;
+
+export function clampConcurrentGenerations(value: number): number {
+  if (!Number.isSafeInteger(value) || value < MIN_CONCURRENT_GENERATIONS) return DEFAULT_CONCURRENT_GENERATIONS;
+  return Math.min(value, MAX_CONCURRENT_GENERATIONS);
+}
+
+export const DEFAULT_AFTER_SECONDS = 30;
+export const DEFAULT_MIN_TURNS = 3;
+
+export type RecapSettingsSnapshot = RecapFormSnapshot & {
+  displayMode: RecapDisplayMode;
+};
+
+export function normalizeRecapSettings(value: unknown): RecapSettingsSnapshot {
+  const stored = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    auto: typeof stored.auto === "boolean" ? stored.auto : true,
+    autoCleanup: typeof stored.autoCleanup === "boolean" ? stored.autoCleanup : true,
+    afterSeconds: parseBoundedInteger(
+      typeof stored.afterSeconds === "number" || typeof stored.afterSeconds === "string"
+        ? String(stored.afterSeconds)
+        : "",
+      DEFAULT_AFTER_SECONDS,
+      0,
+      86_400,
+    ),
+    minTurns: parseBoundedInteger(
+      typeof stored.minTurns === "number" || typeof stored.minTurns === "string"
+        ? String(stored.minTurns)
+        : "",
+      DEFAULT_MIN_TURNS,
+      1,
+      100,
+    ),
+    maxConcurrent: parseBoundedInteger(
+      typeof stored.maxConcurrent === "number" || typeof stored.maxConcurrent === "string"
+        ? String(stored.maxConcurrent)
+        : "",
+      DEFAULT_CONCURRENT_GENERATIONS,
+      MIN_CONCURRENT_GENERATIONS,
+      MAX_CONCURRENT_GENERATIONS,
+    ),
+    displayMode: parseDisplayMode(typeof stored.displayMode === "string" ? stored.displayMode : ""),
+    prompt: normalizeRecapPrompt(stored.prompt),
+  };
+}
+
+export function mergeRecapSettingsPatch(
+  current: RecapSettingsSnapshot,
+  patch: Partial<RecapSettingsSnapshot>,
+): RecapSettingsSnapshot {
+  return normalizeRecapSettings({ ...current, ...patch });
+}
+
+export function recapSettingsFormPatch(
+  next: RecapFormSnapshot,
+): RecapFormSnapshot {
+  return {
+    auto: next.auto,
+    autoCleanup: next.autoCleanup,
+    afterSeconds: next.afterSeconds,
+    minTurns: next.minTurns,
+    maxConcurrent: next.maxConcurrent,
+    prompt: normalizeRecapPrompt(next.prompt),
+  };
+}
+
+export const MAX_AUTOMATIC_RECAP_RETRIES = 3;
+
+const NON_RETRYABLE_AUTOMATIC_REASONS = new Set([
+  "not_enough_turns",
+  "no_conversation",
+  "stale",
+  "already_generating",
+  "aborted",
+  "already_exists",
+  "empty_model_response",
+  "thread_not_idle",
+  "suppressed",
+]);
+
+export function shouldRetryAutomaticRecap(options: {
+  generated: boolean;
+  reason: string | null;
+  retryCount: number;
+}): boolean {
+  if (options.generated) return false;
+  if (options.retryCount >= MAX_AUTOMATIC_RECAP_RETRIES) return false;
+  if (options.reason !== null && NON_RETRYABLE_AUTOMATIC_REASONS.has(options.reason)) return false;
+  return true;
+}
+
+/** Least-permissive mode `threads.spawn` currently accepts (no readonly). */
+export const RECAP_WORKER_PERMISSION_MODE = "accept-edits" as const;
+
+const SQL_RECAP_COLUMNS = `r.id, r.thread_id, r.summary, r.automatic, r.generated_at, r.turns, r.model, r.suppressed`;
+export const SQL_RECAP_VISIBLE = `(r.suppressed = 0 AND (i.invalidated_at IS NULL OR r.generated_at > i.invalidated_at))`;
+export const SQL_RECAP_INVALIDATED = `(r.generated_at <= i.invalidated_at)`;
+
+export const SQL_LATEST_RECAP = `SELECT ${SQL_RECAP_COLUMNS}
+       FROM recaps AS r
+       LEFT JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
+       WHERE r.thread_id = ? AND ${SQL_RECAP_VISIBLE}
+       ORDER BY r.generated_at DESC, r.id DESC LIMIT 1`;
+
+export const SQL_LIST_RECAPS = `SELECT ${SQL_RECAP_COLUMNS}
+       FROM recaps AS r
+       LEFT JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
+       WHERE ${SQL_RECAP_VISIBLE}
+       ORDER BY r.generated_at DESC, r.id DESC LIMIT ?`;
+
+export const SQL_HAS_RECAP_FOR_TURNS = `SELECT 1 AS present
+       FROM recaps AS r
+       LEFT JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
+       WHERE r.thread_id = ? AND r.turns = ? AND ${SQL_RECAP_VISIBLE}
+       LIMIT 1`;
+
+export const SQL_CLEANUP_RECAPS = `DELETE FROM recaps
+       WHERE suppressed = 1
+          OR id IN (
+            SELECT id FROM (
+              SELECT r.id
+              FROM recaps AS r
+              INNER JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
+              WHERE ${SQL_RECAP_INVALIDATED}
+            ) AS invalidated
+          )
+          OR id NOT IN (
+            SELECT id FROM (
+              SELECT r.id
+              FROM recaps AS r
+              LEFT JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
+              WHERE ${SQL_RECAP_VISIBLE}
+              ORDER BY r.generated_at DESC, r.id DESC
+              LIMIT ?
+            ) AS keepers
+          )`;
+
+export const SQL_INSERT_RECAP = `INSERT INTO recaps (id, thread_id, summary, automatic, generated_at, turns, model, suppressed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+
+export const SQL_UPSERT_INVALIDATION = `INSERT INTO recap_invalidations (thread_id, invalidated_at) VALUES (?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET invalidated_at = excluded.invalidated_at`;
+
+export const SQL_CREATE_RECAPS = `CREATE TABLE IF NOT EXISTS recaps (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      automatic INTEGER NOT NULL,
+      generated_at INTEGER NOT NULL,
+      turns INTEGER NOT NULL,
+      model TEXT NOT NULL,
+      suppressed INTEGER NOT NULL DEFAULT 0
+    )`;
+
+export const SQL_CREATE_RECAPS_INDEX = `CREATE INDEX IF NOT EXISTS recaps_thread_generated_at ON recaps(thread_id, generated_at DESC)`;
+
+export const SQL_CREATE_INVALIDATIONS = `CREATE TABLE IF NOT EXISTS recap_invalidations (thread_id TEXT PRIMARY KEY, invalidated_at INTEGER NOT NULL)`;
+
+type GenerationSlotWaiter = {
+  signal: AbortSignal;
+  settle: (result: "acquired" | "aborted") => void;
+};
+
+export type GenerationLimiter = {
+  acquire: (signal: AbortSignal) => Promise<"acquired" | "aborted">;
+  release: () => void;
+  setLimit: (maxConcurrent: number) => void;
+  activeCount: () => number;
+  queuedCount: () => number;
+  limit: () => number;
+};
+
+/** Caps in-flight recap workers. Extra requests wait until a slot is free or aborted. */
+export function createGenerationLimiter(maxConcurrent = DEFAULT_CONCURRENT_GENERATIONS): GenerationLimiter {
+  let limit = clampConcurrentGenerations(maxConcurrent);
+  let active = 0;
+  const waiters: GenerationSlotWaiter[] = [];
+
+  const grantQueued = () => {
+    while (waiters.length > 0 && active < limit) {
+      const next = waiters.shift();
+      if (!next) continue;
+      if (next.signal.aborted) {
+        next.settle("aborted");
+        continue;
+      }
+      active += 1;
+      next.settle("acquired");
+    }
+  };
+
+  const acquire = (signal: AbortSignal): Promise<"acquired" | "aborted"> => {
+    if (signal.aborted) return Promise.resolve("aborted");
+    if (active < limit) {
+      active += 1;
+      return Promise.resolve("acquired");
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const waiter: GenerationSlotWaiter = {
+        signal,
+        settle: (result) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          resolve(result);
+        },
+      };
+      const onAbort = () => {
+        const index = waiters.indexOf(waiter);
+        if (index >= 0) waiters.splice(index, 1);
+        waiter.settle("aborted");
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      waiters.push(waiter);
+    });
+  };
+
+  const release = () => {
+    if (active > 0) active -= 1;
+    grantQueued();
+  };
+
+  const setLimit = (maxConcurrent: number) => {
+    limit = clampConcurrentGenerations(maxConcurrent);
+    grantQueued();
+  };
+
+  return {
+    acquire,
+    release,
+    setLimit,
+    activeCount: () => active,
+    queuedCount: () => waiters.length,
+    limit: () => limit,
+  };
 }

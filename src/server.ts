@@ -9,15 +9,27 @@ import {
   MAX_RECAP_CHARS,
   MAX_RECAP_PROMPT_CHARS,
   MAX_TRANSCRIPT_CHARS,
-  normalizeRecapPrompt,
-  parseDisplayMode,
-  parseBoundedInteger,
   parsePositiveInteger,
+  createGenerationLimiter,
+  MAX_CONCURRENT_GENERATIONS,
+  MIN_CONCURRENT_GENERATIONS,
+  mergeRecapSettingsPatch,
+  normalizeRecapSettings,
+  recapSettingsFormPatch,
   RECAP_DISPLAY_MODES,
+  RECAP_WORKER_PERMISSION_MODE,
+  shouldRetryAutomaticRecap,
+  SQL_CLEANUP_RECAPS,
+  SQL_CREATE_INVALIDATIONS,
+  SQL_CREATE_RECAPS,
+  SQL_CREATE_RECAPS_INDEX,
+  SQL_HAS_RECAP_FOR_TURNS,
+  SQL_INSERT_RECAP,
+  SQL_LATEST_RECAP,
+  SQL_LIST_RECAPS,
+  SQL_UPSERT_INVALIDATION,
 } from "./recap.js";
 
-const DEFAULT_AFTER_SECONDS = 30;
-const DEFAULT_MIN_TURNS = 3;
 const MAX_ID_CHARS = 256;
 const MAX_STORED_RECAPS = 1_000;
 const RETRY_AFTER_MS = 90_000;
@@ -60,6 +72,7 @@ const recapSettingsSchema = z.object({
   autoCleanup: z.boolean(),
   afterSeconds: z.number().int().min(0).max(86_400),
   minTurns: z.number().int().min(1).max(100),
+  maxConcurrent: z.number().int().min(MIN_CONCURRENT_GENERATIONS).max(MAX_CONCURRENT_GENERATIONS),
   displayMode: displayModeSchema,
   prompt: z.string().max(MAX_RECAP_PROMPT_CHARS),
 }).strict();
@@ -122,6 +135,7 @@ type ThreadState = {
   inFlight: boolean;
   lastAutoTurns: number;
   idleThread?: ThreadSnapshot;
+  autoRetryCount: number;
   generationController?: AbortController;
   generationPromise?: Promise<GenerationResult>;
   retired?: boolean;
@@ -164,31 +178,7 @@ function rowToRecap(row: StoredRecapRow): Recap {
 }
 
 function parseStoredSettings(value: unknown): RecapSettings {
-  const stored = value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-  return {
-    auto: typeof stored.auto === "boolean" ? stored.auto : true,
-    autoCleanup: typeof stored.autoCleanup === "boolean" ? stored.autoCleanup : true,
-    afterSeconds: parseBoundedInteger(
-      typeof stored.afterSeconds === "number" || typeof stored.afterSeconds === "string"
-        ? String(stored.afterSeconds)
-        : "",
-      DEFAULT_AFTER_SECONDS,
-      0,
-      86_400,
-    ),
-    minTurns: parseBoundedInteger(
-      typeof stored.minTurns === "number" || typeof stored.minTurns === "string"
-        ? String(stored.minTurns)
-        : "",
-      DEFAULT_MIN_TURNS,
-      1,
-      100,
-    ),
-    displayMode: parseDisplayMode(typeof stored.displayMode === "string" ? stored.displayMode : ""),
-    prompt: normalizeRecapPrompt(stored.prompt),
-  };
+  return normalizeRecapSettings(value);
 }
 
 function parseStoredModelSelection(value: unknown): ModelSelection | undefined {
@@ -203,25 +193,16 @@ function isRecapEventTarget(thread: ThreadSnapshot, pluginId: string): boolean {
 export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [
-    `CREATE TABLE IF NOT EXISTS recaps (
-      id TEXT PRIMARY KEY,
-      thread_id TEXT NOT NULL,
-      summary TEXT NOT NULL,
-      automatic INTEGER NOT NULL,
-      generated_at INTEGER NOT NULL,
-      turns INTEGER NOT NULL,
-      model TEXT NOT NULL,
-      suppressed INTEGER NOT NULL DEFAULT 0
-    )`,
-    `CREATE INDEX IF NOT EXISTS recaps_thread_generated_at ON recaps(thread_id, generated_at DESC)`,
-    `CREATE TABLE IF NOT EXISTS recap_invalidations (thread_id TEXT PRIMARY KEY, invalidated_at INTEGER NOT NULL)`,
+    SQL_CREATE_RECAPS,
+    SQL_CREATE_RECAPS_INDEX,
+    SQL_CREATE_INVALIDATIONS,
   ]);
 
   let config = parseStoredSettings(await bb.storage.kv.get(SETTINGS_KEY));
   let modelSelection = parseStoredModelSelection(await bb.storage.kv.get(MODEL_SELECTION_KEY));
   const states = new Map<string, ThreadState>();
+  const generationLimiter = createGenerationLimiter(config.maxConcurrent);
   let disposed = false;
-  const bootstrapController = new AbortController();
 
   const publishChanged = (payload: Record<string, unknown>) => {
     if (disposed) return;
@@ -244,7 +225,7 @@ export default async function plugin(bb: BbPluginApi) {
   const stateFor = (threadId: string): ThreadState => {
     const existing = states.get(threadId);
     if (existing) return existing;
-    const created: ThreadState = { epoch: 0, inFlight: false, lastAutoTurns: 0 };
+    const created: ThreadState = { epoch: 0, inFlight: false, lastAutoTurns: 0, autoRetryCount: 0 };
     states.set(threadId, created);
     return created;
   };
@@ -257,56 +238,28 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   const latestRecap = (threadId: string): Recap | null => {
-    const row = db.prepare(
-      `SELECT r.id, r.thread_id, r.summary, r.automatic, r.generated_at, r.turns, r.model, r.suppressed
-       FROM recaps AS r
-       LEFT JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
-       WHERE r.thread_id = ? AND r.suppressed = 0
-         AND (i.invalidated_at IS NULL OR r.generated_at > i.invalidated_at)
-       ORDER BY r.generated_at DESC, r.id DESC LIMIT 1`,
-    ).get(threadId) as StoredRecapRow | undefined;
+    const row = db.prepare(SQL_LATEST_RECAP).get(threadId) as StoredRecapRow | undefined;
     return row ? rowToRecap(row) : null;
   };
 
   const listRecaps = (limit: number): Recap[] => {
-    const rows = db.prepare(
-      `SELECT id, thread_id, summary, automatic, generated_at, turns, model, suppressed
-       FROM recaps WHERE suppressed = 0 ORDER BY generated_at DESC, id DESC LIMIT ?`,
-    ).all(limit) as StoredRecapRow[];
+    const rows = db.prepare(SQL_LIST_RECAPS).all(limit) as StoredRecapRow[];
     return rows.map(rowToRecap);
   };
 
   const cleanupStoredRecaps = () => {
-    db.prepare(
-      `DELETE FROM recaps
-       WHERE suppressed = 1 OR id NOT IN (
-         SELECT id FROM recaps
-         WHERE suppressed = 0
-         ORDER BY generated_at DESC, id DESC
-         LIMIT ?
-       )`,
-    ).run(MAX_STORED_RECAPS);
+    db.prepare(SQL_CLEANUP_RECAPS).run(MAX_STORED_RECAPS);
   };
 
   if (config.autoCleanup) cleanupStoredRecaps();
 
   const hasRecapForTurns = (threadId: string, turns: number): boolean => {
-    const row = db.prepare(
-      `SELECT 1 AS present
-       FROM recaps AS r
-       LEFT JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
-       WHERE r.thread_id = ? AND r.turns = ? AND r.suppressed = 0
-         AND (i.invalidated_at IS NULL OR r.generated_at > i.invalidated_at)
-       LIMIT 1`,
-    ).get(threadId, turns) as { present: number } | undefined;
+    const row = db.prepare(SQL_HAS_RECAP_FOR_TURNS).get(threadId, turns) as { present: number } | undefined;
     return row !== undefined;
   };
 
   const invalidateRecap = (threadId: string) => {
-    db.prepare(
-      `INSERT INTO recap_invalidations (thread_id, invalidated_at) VALUES (?, ?)
-       ON CONFLICT(thread_id) DO UPDATE SET invalidated_at = excluded.invalidated_at`,
-    ).run(threadId, Date.now());
+    db.prepare(SQL_UPSERT_INVALIDATION).run(threadId, Date.now());
     publishChanged({ threadId, invalidated: true });
   };
 
@@ -321,10 +274,7 @@ export default async function plugin(bb: BbPluginApi) {
       model,
       suppressed,
     };
-    db.prepare(
-      `INSERT INTO recaps (id, thread_id, summary, automatic, generated_at, turns, model, suppressed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
+    db.prepare(SQL_INSERT_RECAP).run(
       stored.id,
       stored.threadId,
       stored.summary,
@@ -442,7 +392,7 @@ export default async function plugin(bb: BbPluginApi) {
       model: execution.model,
       reasoningLevel: execution.reasoningLevel,
       ...(execution.serviceTier ? { serviceTier: execution.serviceTier } : {}),
-      permissionMode: "accept-edits",
+      permissionMode: RECAP_WORKER_PERMISSION_MODE,
       title: "Recap worker",
       visibility: "hidden",
       prompt: buildRecapPrompt(config.prompt, transcript),
@@ -529,12 +479,18 @@ export default async function plugin(bb: BbPluginApi) {
     state.generationController = controller;
     publishChanged({ threadId, generating: true });
     const generationPromise = (async () => {
+      let acquired = false;
       try {
+        const slot = await generationLimiter.acquire(combinedSignal);
+        if (slot === "aborted") return result("aborted");
+        acquired = true;
+        if (combinedSignal.aborted) return result("aborted");
         return await generateForThread(threadId, automatic, expectedEpoch, combinedSignal);
       } catch (error) {
         if (combinedSignal.aborted) return result("aborted");
         throw error;
       } finally {
+        if (acquired) generationLimiter.release();
         state.inFlight = false;
         state.generationController = undefined;
         state.generationPromise = undefined;
@@ -546,54 +502,51 @@ export default async function plugin(bb: BbPluginApi) {
     return generationPromise;
   };
 
-  const scheduleAutomaticRecap = (thread: ThreadSnapshot, delay = config.afterSeconds * 1000) => {
+  const scheduleAutomaticRecap = (thread: ThreadSnapshot, delay = config.afterSeconds * 1000, retry = false) => {
     if (disposed) return;
     const state = stateFor(thread.id);
     clearTimer(state);
     state.idleThread = thread;
+    if (!retry) state.autoRetryCount = 0;
     if (!config.auto || thread.status !== "idle") return;
     const epoch = state.epoch;
     state.timer = setTimeout(() => {
       state.timer = undefined;
       if (disposed) return;
       void beginGeneration(thread.id, true, epoch).then((generation) => {
-        if (generation.generated && generation.turns !== null) state.lastAutoTurns = generation.turns;
-        if (!generation.generated && !["not_enough_turns", "no_conversation", "stale", "already_generating", "aborted"].includes(generation.reason ?? "")) {
-          if (state.epoch === epoch && state.idleThread) scheduleAutomaticRecap(state.idleThread, RETRY_AFTER_MS);
+        if (generation.generated && generation.turns !== null) {
+          state.lastAutoTurns = generation.turns;
+          state.autoRetryCount = 0;
+        }
+        if (
+          state.epoch === epoch &&
+          state.idleThread &&
+          shouldRetryAutomaticRecap({
+            generated: generation.generated,
+            reason: generation.reason,
+            retryCount: state.autoRetryCount,
+          })
+        ) {
+          state.autoRetryCount += 1;
+          scheduleAutomaticRecap(state.idleThread, RETRY_AFTER_MS, true);
         }
       }).catch((error: unknown) => {
         logWarning(`Automatic recap failed: ${error instanceof Error ? error.message : String(error)}`);
-        if (!disposed && state.epoch === epoch && state.idleThread) scheduleAutomaticRecap(state.idleThread, RETRY_AFTER_MS);
+        if (
+          !disposed &&
+          state.epoch === epoch &&
+          state.idleThread &&
+          shouldRetryAutomaticRecap({
+            generated: false,
+            reason: null,
+            retryCount: state.autoRetryCount,
+          })
+        ) {
+          state.autoRetryCount += 1;
+          scheduleAutomaticRecap(state.idleThread, RETRY_AFTER_MS, true);
+        }
       });
     }, Math.max(0, delay));
-  };
-
-  const bootstrapIdleThreads = async (signal: AbortSignal) => {
-    if (!config.auto || disposed) return;
-    let offset = 0;
-    try {
-      while (!signal.aborted && !disposed) {
-        const threads = await bb.sdk.threads.list({
-          archived: false,
-          includeHidden: false,
-          limit: 100,
-          offset,
-          signal,
-        });
-        for (const thread of threads) {
-          const snapshot = thread as ThreadSnapshot;
-          if (snapshot.status === "idle" && isRecapEventTarget(snapshot, bb.pluginId)) {
-            scheduleAutomaticRecap(snapshot);
-          }
-        }
-        if (threads.length < 100) break;
-        offset += threads.length;
-      }
-    } catch (error) {
-      if (!signal.aborted && !disposed) {
-        logWarning(`Automatic recap bootstrap failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
   };
 
   const rearmAfterManual = async (threadId: string, generation: GenerationResult, signal?: AbortSignal) => {
@@ -609,16 +562,22 @@ export default async function plugin(bb: BbPluginApi) {
     }
   };
 
-  const persistSettings = async (next: RecapSettings) => {
-    const wasAuto = config.auto;
-    await bb.storage.kv.set(SETTINGS_KEY, next);
-    config = next;
-    if (config.autoCleanup) cleanupStoredRecaps();
-    publishChanged({ settings: true });
-    for (const state of states.values()) {
-      if (!state.inFlight && state.idleThread) scheduleAutomaticRecap(state.idleThread);
-    }
-    if (!wasAuto && config.auto) void bootstrapIdleThreads(bootstrapController.signal);
+  let persistQueue = Promise.resolve();
+  const persistSettings = (patch: Partial<RecapSettings>): Promise<RecapSettings> => {
+    const run = persistQueue.then(async () => {
+      const next = mergeRecapSettingsPatch(config, patch);
+      await bb.storage.kv.set(SETTINGS_KEY, next);
+      config = next;
+      generationLimiter.setLimit(config.maxConcurrent);
+      if (config.autoCleanup) cleanupStoredRecaps();
+      publishChanged({ settings: true });
+      for (const state of states.values()) {
+        if (!state.inFlight && state.idleThread) scheduleAutomaticRecap(state.idleThread);
+      }
+      return next;
+    });
+    persistQueue = run.then(() => undefined, () => undefined);
+    return run;
   };
 
   bb.rpc.register(rpcContract, {
@@ -650,18 +609,11 @@ export default async function plugin(bb: BbPluginApi) {
       publishChanged({ settings: true });
       return { selection: stored };
     },
-    recap_settings_get: async () => config,
-    recap_settings_set: async (next) => {
-      const stored = {
-        ...next,
-        prompt: normalizeRecapPrompt(next.prompt),
-      };
-      await persistSettings(stored);
-      return stored;
-    },
+    recap_settings_get: async () => parseStoredSettings(config),
+    recap_settings_set: async (next) => persistSettings(recapSettingsFormPatch(next)),
     recap_display_mode_set: async ({ displayMode }) => {
-      await persistSettings({ ...config, displayMode });
-      return { displayMode };
+      const saved = await persistSettings({ displayMode });
+      return { displayMode: saved.displayMode };
     },
     recap_generate: async ({ threadId, automatic }) => {
       const isAutomatic = automatic === true;
@@ -788,7 +740,6 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.onDispose(async () => {
     disposed = true;
-    bootstrapController.abort();
     const pending: Promise<unknown>[] = [];
     for (const state of states.values()) clearTimer(state);
     for (const state of states.values()) {
@@ -800,5 +751,4 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.log.info("loaded");
-  void bootstrapIdleThreads(bootstrapController.signal);
 }

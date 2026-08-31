@@ -11,5 +11,5 @@
     "noEmit": true,
     "skipLibCheck": false
   },
-  "include": ["src/server.ts", "src/app.tsx", "src/recap.ts", "tests/recap.test.ts"]
+  "include": ["src/server.ts", "src/app.tsx", "src/recap.ts", "tests/recap.test.ts", "tests/storage.test.ts"]
 }
