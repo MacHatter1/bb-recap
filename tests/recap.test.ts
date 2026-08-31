@@ -13,7 +13,6 @@ import {
   isBlankRecapPrompt,
   recapPromptWouldReset,
   recapFormIsDirty,
-  recapSettingsMatch,
   recapSettingsFormPatch,
   mergeRecapSettingsPatch,
   normalizeRecapSettings,
@@ -22,6 +21,7 @@ import {
   settingsFormStatus,
   settingsFormStatusLabel,
   parseBoundedInteger,
+  parseClampedInteger,
   parseDisplayMode,
   parsePositiveInteger,
   RECAP_DISPLAY_MODES,
@@ -84,7 +84,6 @@ test("treats reverted settings edits as clean", () => {
   assert.equal(normalizeRecapSettings({}).maxConcurrent, 2);
   assert.equal(normalizeRecapSettings({ auto: false }).auto, false);
   assert.equal(typeof normalizeRecapSettings(null).prompt, "string");
-  assert.equal(recapSettingsMatch({ ...saved, displayMode: "Compact banner" }, { ...saved, displayMode: "Compact banner" }), true);
 });
 
 test("form settings patches do not overwrite a newer display mode", () => {
@@ -144,6 +143,13 @@ test("bounds settings without accepting invalid values", () => {
   assert.equal(clampConcurrentGenerations(99), MAX_CONCURRENT_GENERATIONS);
   assert.equal(parseBoundedInteger("4", 2, MIN_CONCURRENT_GENERATIONS, MAX_CONCURRENT_GENERATIONS), 4);
   assert.equal(parseBoundedInteger("0", 2, MIN_CONCURRENT_GENERATIONS, MAX_CONCURRENT_GENERATIONS), 2);
+});
+
+test("clamps valid user-entered integers to the declared range", () => {
+  assert.equal(parseClampedInteger("-1", 30, 0, 86_400), 0);
+  assert.equal(parseClampedInteger("0", 3, 1, 100), 1);
+  assert.equal(parseClampedInteger("999999", 2, 1, 5), 5);
+  assert.equal(parseClampedInteger("not-a-number", 3, 1, 100), 3);
 });
 
 test("hides recap banners inside inline message editors", () => {

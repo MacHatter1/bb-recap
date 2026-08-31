@@ -14,16 +14,13 @@ import type {
   PluginThreadPanelProps,
 } from "@get-bb/plugin-sdk/app";
 import {
-  DEFAULT_AFTER_SECONDS,
-  DEFAULT_CONCURRENT_GENERATIONS,
-  DEFAULT_MIN_TURNS,
   DEFAULT_RECAP_PROMPT,
   isBlankRecapPrompt,
   MAX_CONCURRENT_GENERATIONS,
   MAX_RECAP_PROMPT_CHARS,
   MIN_CONCURRENT_GENERATIONS,
   normalizeRecapSettings,
-  parseBoundedInteger,
+  parseClampedInteger,
   RECAP_DISPLAY_MODE_OPTIONS,
   RECAP_DISPLAY_MODES,
   recapFormIsDirty,
@@ -498,7 +495,7 @@ function BoundedNumberInput({
     const raw = textFromInput(event);
     setText(raw);
     if (/^-?\d+$/.test(raw.trim())) {
-      onCommit(parseBoundedInteger(raw, fallback, min, max));
+      onCommit(parseClampedInteger(raw, fallback, min, max));
     }
   };
 
@@ -705,7 +702,7 @@ function SettingsSectionBody() {
                 value={draft.afterSeconds}
                 min={0}
                 max={86_400}
-                fallback={DEFAULT_AFTER_SECONDS}
+                fallback={0}
                 disabled={settingsSaving}
                 onCommit={(afterSeconds) => updateDraft((current) => ({ ...current, afterSeconds }))}
               />
@@ -717,7 +714,7 @@ function SettingsSectionBody() {
                 value={draft.minTurns}
                 min={1}
                 max={100}
-                fallback={DEFAULT_MIN_TURNS}
+                fallback={1}
                 disabled={settingsSaving}
                 onCommit={(minTurns) => updateDraft((current) => ({ ...current, minTurns }))}
               />
@@ -729,7 +726,7 @@ function SettingsSectionBody() {
                 value={draft.maxConcurrent}
                 min={MIN_CONCURRENT_GENERATIONS}
                 max={MAX_CONCURRENT_GENERATIONS}
-                fallback={DEFAULT_CONCURRENT_GENERATIONS}
+                fallback={MIN_CONCURRENT_GENERATIONS}
                 disabled={settingsSaving}
                 onCommit={(maxConcurrent) => updateDraft((current) => ({ ...current, maxConcurrent }))}
               />

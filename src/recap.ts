@@ -75,13 +75,6 @@ export function recapFormIsDirty(draft: RecapFormSnapshot, saved: RecapFormSnaps
     || draft.prompt !== saved.prompt;
 }
 
-export function recapSettingsMatch(
-  left: RecapFormSnapshot & { displayMode: RecapDisplayMode },
-  right: RecapFormSnapshot & { displayMode: RecapDisplayMode },
-): boolean {
-  return !recapFormIsDirty(left, right) && left.displayMode === right.displayMode;
-}
-
 export function normalizeRecapPrompt(raw: unknown): string {
   if (typeof raw !== "string") return DEFAULT_RECAP_PROMPT;
   const prompt = raw.trim();
@@ -227,6 +220,13 @@ export function parseBoundedInteger(raw: string, fallback: number, min: number, 
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < min) return fallback;
   return Math.min(value, max);
+}
+
+export function parseClampedInteger(raw: string, fallback: number, min: number, max: number): number {
+  if (!/^-?\d+$/.test(raw.trim())) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) return fallback;
+  return Math.max(min, Math.min(value, max));
 }
 
 export function parsePositiveInteger(raw: string): number | null {
