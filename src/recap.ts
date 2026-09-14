@@ -8,7 +8,8 @@ export const RECAP_DISPLAY_MODES = {
   onDemand: "On demand",
 } as const;
 
-export type RecapDisplayMode = typeof RECAP_DISPLAY_MODES[keyof typeof RECAP_DISPLAY_MODES];
+export type RecapDisplayMode =
+  (typeof RECAP_DISPLAY_MODES)[keyof typeof RECAP_DISPLAY_MODES];
 
 export const RECAP_DISPLAY_MODE_OPTIONS: RecapDisplayMode[] = [
   RECAP_DISPLAY_MODES.compact,
@@ -17,14 +18,18 @@ export const RECAP_DISPLAY_MODE_OPTIONS: RecapDisplayMode[] = [
 ];
 
 export function parseDisplayMode(raw: string): RecapDisplayMode {
-  if (RECAP_DISPLAY_MODE_OPTIONS.includes(raw as RecapDisplayMode)) return raw as RecapDisplayMode;
+  if (RECAP_DISPLAY_MODE_OPTIONS.includes(raw as RecapDisplayMode))
+    return raw as RecapDisplayMode;
   if (raw === "compact") return RECAP_DISPLAY_MODES.compact;
   if (raw === "card") return RECAP_DISPLAY_MODES.card;
   if (raw === "on-demand") return RECAP_DISPLAY_MODES.onDemand;
   return RECAP_DISPLAY_MODES.compact;
 }
 
-export function shouldShowRecapBanner(scopeKind: string, isInlineMessageEditor: boolean): boolean {
+export function shouldShowRecapBanner(
+  scopeKind: string,
+  isInlineMessageEditor: boolean,
+): boolean {
   return scopeKind === "thread" && !isInlineMessageEditor;
 }
 
@@ -45,7 +50,10 @@ export function recapPromptWouldReset(raw: unknown): boolean {
 
 export type SettingsFormStatus = "saving" | "unsaved" | "saved";
 
-export function settingsFormStatus(formSaving: boolean, formDirty: boolean): SettingsFormStatus {
+export function settingsFormStatus(
+  formSaving: boolean,
+  formDirty: boolean,
+): SettingsFormStatus {
   if (formSaving) return "saving";
   if (formDirty) return "unsaved";
   return "saved";
@@ -66,13 +74,18 @@ export type RecapFormSnapshot = {
   prompt: string;
 };
 
-export function recapFormIsDirty(draft: RecapFormSnapshot, saved: RecapFormSnapshot): boolean {
-  return draft.auto !== saved.auto
-    || draft.autoCleanup !== saved.autoCleanup
-    || draft.afterSeconds !== saved.afterSeconds
-    || draft.minTurns !== saved.minTurns
-    || draft.maxConcurrent !== saved.maxConcurrent
-    || draft.prompt !== saved.prompt;
+export function recapFormIsDirty(
+  draft: RecapFormSnapshot,
+  saved: RecapFormSnapshot,
+): boolean {
+  return (
+    draft.auto !== saved.auto ||
+    draft.autoCleanup !== saved.autoCleanup ||
+    draft.afterSeconds !== saved.afterSeconds ||
+    draft.minTurns !== saved.minTurns ||
+    draft.maxConcurrent !== saved.maxConcurrent ||
+    draft.prompt !== saved.prompt
+  );
 }
 
 export function normalizeRecapPrompt(raw: unknown): string {
@@ -82,11 +95,25 @@ export function normalizeRecapPrompt(raw: unknown): string {
 }
 
 function escapeTranscript(text: string): string {
-  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
-export function buildRecapPrompt(prompt: string, transcript: string): string {
-  return `${normalizeRecapPrompt(prompt)}\n\n${UNTRUSTED_TRANSCRIPT_INSTRUCTIONS}\n\n<session-transcript>\n${escapeTranscript(transcript)}\n</session-transcript>`;
+const PREVIOUS_RECAP_INSTRUCTIONS =
+  "Write a replacement recap for the whole session. Use the previous recap for earlier work and the new transcript for what happened next. Same one-sentence, 25–40 word rules. Carry forward still-relevant files, symbols, decisions, and unfinished work. Prefer the new transcript when they conflict. Do not say the session just began.";
+
+export function buildRecapPrompt(
+  prompt: string,
+  transcript: string,
+  previousRecap?: string,
+): string {
+  const previous = previousRecap?.trim();
+  const previousBlock = previous
+    ? `\n\nPrevious recap:\n<previous-recap>\n${escapeTranscript(previous)}\n</previous-recap>\n\n${PREVIOUS_RECAP_INSTRUCTIONS}`
+    : "";
+  return `${normalizeRecapPrompt(prompt)}${previousBlock}\n\n${UNTRUSTED_TRANSCRIPT_INSTRUCTIONS}\n\n<session-transcript>\n${escapeTranscript(transcript)}\n</session-transcript>`;
 }
 
 export const MAX_TRANSCRIPT_CHARS = 120_000;
@@ -96,7 +123,9 @@ export const MAX_RECAP_CHARS = 1_200;
 type UnknownRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): UnknownRecord | undefined {
-  return value && typeof value === "object" ? (value as UnknownRecord) : undefined;
+  return value && typeof value === "object"
+    ? (value as UnknownRecord)
+    : undefined;
 }
 
 function truncate(text: string, max = MAX_PART_CHARS): string {
@@ -105,7 +134,10 @@ function truncate(text: string, max = MAX_PART_CHARS): string {
   return `${normalized.slice(0, max).trimEnd()}…`;
 }
 
-function flattenRows(rows: unknown[], result: UnknownRecord[] = []): UnknownRecord[] {
+function flattenRows(
+  rows: unknown[],
+  result: UnknownRecord[] = [],
+): UnknownRecord[] {
   for (const rawRow of rows) {
     const row = asRecord(rawRow);
     if (!row) continue;
@@ -123,13 +155,19 @@ function workRowText(row: UnknownRecord): string | undefined {
   const workKind = row.workKind;
   if (workKind === "tool" && typeof row.toolName === "string") {
     const output = typeof row.output === "string" ? truncate(row.output) : "";
-    return [`Tool call: ${truncate(row.toolName)}`, output ? `Tool result: ${output}` : ""]
+    return [
+      `Tool call: ${truncate(row.toolName)}`,
+      output ? `Tool result: ${output}` : "",
+    ]
       .filter(Boolean)
       .join("\n");
   }
   if (workKind === "command" && typeof row.command === "string") {
     const output = typeof row.output === "string" ? truncate(row.output) : "";
-    return [`Command: ${truncate(row.command)}`, output ? `Command output: ${output}` : ""]
+    return [
+      `Command: ${truncate(row.command)}`,
+      output ? `Command output: ${output}` : "",
+    ]
       .filter(Boolean)
       .join("\n");
   }
@@ -137,23 +175,45 @@ function workRowText(row: UnknownRecord): string | undefined {
     const change = asRecord(row.change);
     return `File change: ${truncate(String(change?.path))}`;
   }
-  if (workKind === "file-read" && typeof row.path === "string") return `File read: ${truncate(row.path)}`;
+  if (workKind === "file-read" && typeof row.path === "string")
+    return `File read: ${truncate(row.path)}`;
   if (workKind === "search") {
     return `Search: ${typeof row.query === "string" ? truncate(row.query) : ""}`.trim();
   }
   if (workKind === "extension") {
     return "Extension work";
   }
-  return typeof workKind === "string" ? `Agent work: ${truncate(workKind)}` : undefined;
+  return typeof workKind === "string"
+    ? `Agent work: ${truncate(workKind)}`
+    : undefined;
 }
 
 /** Convert BB timeline rows into a bounded transcript for the recap worker. */
-export function buildConversationText(rows: unknown[], maxChars = MAX_TRANSCRIPT_CHARS): string {
+export function buildConversationText(
+  rows: unknown[],
+  maxChars = MAX_TRANSCRIPT_CHARS,
+  afterUserTurns = 0,
+  threadId?: string,
+): string {
   const sections: string[] = [];
+  const skipTurns = Number.isFinite(afterUserTurns)
+    ? Math.max(0, Math.floor(afterUserTurns))
+    : 0;
+  let seenUserTurns = 0;
 
   for (const row of flattenRows(rows)) {
+    if (
+      row.kind === "conversation" &&
+      row.role === "user" &&
+      (threadId === undefined || row.threadId === threadId)
+    ) {
+      seenUserTurns += 1;
+    }
+    if (skipTurns > 0 && seenUserTurns <= skipTurns) continue;
     if (row.kind === "conversation") {
-      const role = row.role === "user" ? "User" : row.role === "assistant" ? "Assistant" : undefined;
+      let role: string | undefined;
+      if (row.role === "user") role = "User";
+      else if (row.role === "assistant") role = "Assistant";
       const text = rowText(row);
       if (role && text) sections.push(`${role}: ${text}`);
       continue;
@@ -164,7 +224,8 @@ export function buildConversationText(rows: unknown[], maxChars = MAX_TRANSCRIPT
       continue;
     }
     if (row.kind === "system" && typeof row.title === "string") {
-      const detail = typeof row.detail === "string" ? `: ${truncate(row.detail)}` : "";
+      const detail =
+        typeof row.detail === "string" ? `: ${truncate(row.detail)}` : "";
       sections.push(`System: ${truncate(row.title)}${detail}`);
     }
   }
@@ -184,17 +245,65 @@ export function buildConversationText(rows: unknown[], maxChars = MAX_TRANSCRIPT
 }
 
 export function countUserTurns(rows: unknown[], threadId?: string): number {
-  return flattenRows(rows).filter((row) =>
-    row.kind === "conversation" &&
-    row.role === "user" &&
-    (threadId === undefined || row.threadId === threadId),
+  return flattenRows(rows).filter(
+    (row) =>
+      row.kind === "conversation" &&
+      row.role === "user" &&
+      (threadId === undefined || row.threadId === threadId),
   ).length;
+}
+
+export type RecapContext = {
+  summary: string;
+  turns: number;
+};
+
+/** First recap is the full (capped) transcript; later recaps send previous summary + new turns. */
+export function buildRecapWorkerInput(
+  rows: unknown[],
+  previous: RecapContext | null | undefined,
+  turns: number,
+  threadId?: string,
+  maxChars = MAX_TRANSCRIPT_CHARS,
+): { transcript: string; previousRecap: string | undefined } {
+  const incremental =
+    previous !== undefined &&
+    previous !== null &&
+    previous.summary !== "" &&
+    previous.turns < turns;
+  if (!incremental) {
+    return {
+      transcript: buildConversationText(rows, maxChars, 0, threadId),
+      previousRecap: undefined,
+    };
+  }
+  const transcript = buildConversationText(
+    rows,
+    maxChars,
+    previous.turns,
+    threadId,
+  );
+  if (transcript === "") {
+    return {
+      transcript: buildConversationText(rows, maxChars, 0, threadId),
+      previousRecap: undefined,
+    };
+  }
+  return { transcript, previousRecap: previous.summary };
 }
 
 export function cleanRecapText(raw: string): string {
   let result = raw.split(/\s+/).join(" ").trim();
 
-  for (const label of ["Recap —", "Recap—", "Recap -", "Recap:", "recap:", "Session recap:", "Summary:"]) {
+  for (const label of [
+    "Recap —",
+    "Recap—",
+    "Recap -",
+    "Recap:",
+    "recap:",
+    "Session recap:",
+    "Summary:",
+  ]) {
     if (result.startsWith(label)) {
       result = result.slice(label.length).trimStart();
       break;
@@ -215,14 +324,24 @@ export function cleanRecapText(raw: string): string {
   return result;
 }
 
-export function parseBoundedInteger(raw: string, fallback: number, min: number, max: number): number {
+export function parseBoundedInteger(
+  raw: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
   if (!/^-?\d+$/.test(raw.trim())) return fallback;
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < min) return fallback;
   return Math.min(value, max);
 }
 
-export function parseClampedInteger(raw: string, fallback: number, min: number, max: number): number {
+export function parseClampedInteger(
+  raw: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
   if (!/^-?\d+$/.test(raw.trim())) return fallback;
   const value = Number(raw);
   if (!Number.isSafeInteger(value)) return fallback;
@@ -241,7 +360,8 @@ export const MIN_CONCURRENT_GENERATIONS = 1;
 export const MAX_CONCURRENT_GENERATIONS = 5;
 
 export function clampConcurrentGenerations(value: number): number {
-  if (!Number.isSafeInteger(value) || value < MIN_CONCURRENT_GENERATIONS) return DEFAULT_CONCURRENT_GENERATIONS;
+  if (!Number.isSafeInteger(value) || value < MIN_CONCURRENT_GENERATIONS)
+    return DEFAULT_CONCURRENT_GENERATIONS;
   return Math.min(value, MAX_CONCURRENT_GENERATIONS);
 }
 
@@ -253,14 +373,17 @@ export type RecapSettingsSnapshot = RecapFormSnapshot & {
 };
 
 export function normalizeRecapSettings(value: unknown): RecapSettingsSnapshot {
-  const stored = value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
+  const stored =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
   return {
     auto: typeof stored.auto === "boolean" ? stored.auto : true,
-    autoCleanup: typeof stored.autoCleanup === "boolean" ? stored.autoCleanup : true,
+    autoCleanup:
+      typeof stored.autoCleanup === "boolean" ? stored.autoCleanup : true,
     afterSeconds: parseBoundedInteger(
-      typeof stored.afterSeconds === "number" || typeof stored.afterSeconds === "string"
+      typeof stored.afterSeconds === "number" ||
+        typeof stored.afterSeconds === "string"
         ? String(stored.afterSeconds)
         : "",
       DEFAULT_AFTER_SECONDS,
@@ -276,14 +399,17 @@ export function normalizeRecapSettings(value: unknown): RecapSettingsSnapshot {
       100,
     ),
     maxConcurrent: parseBoundedInteger(
-      typeof stored.maxConcurrent === "number" || typeof stored.maxConcurrent === "string"
+      typeof stored.maxConcurrent === "number" ||
+        typeof stored.maxConcurrent === "string"
         ? String(stored.maxConcurrent)
         : "",
       DEFAULT_CONCURRENT_GENERATIONS,
       MIN_CONCURRENT_GENERATIONS,
       MAX_CONCURRENT_GENERATIONS,
     ),
-    displayMode: parseDisplayMode(typeof stored.displayMode === "string" ? stored.displayMode : ""),
+    displayMode: parseDisplayMode(
+      typeof stored.displayMode === "string" ? stored.displayMode : "",
+    ),
     prompt: normalizeRecapPrompt(stored.prompt),
   };
 }
@@ -329,7 +455,11 @@ export function shouldRetryAutomaticRecap(options: {
 }): boolean {
   if (options.generated) return false;
   if (options.retryCount >= MAX_AUTOMATIC_RECAP_RETRIES) return false;
-  if (options.reason !== null && NON_RETRYABLE_AUTOMATIC_REASONS.has(options.reason)) return false;
+  if (
+    options.reason !== null &&
+    NON_RETRYABLE_AUTOMATIC_REASONS.has(options.reason)
+  )
+    return false;
   return true;
 }
 
@@ -344,6 +474,11 @@ export const SQL_LATEST_RECAP = `SELECT ${SQL_RECAP_COLUMNS}
        FROM recaps AS r
        LEFT JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
        WHERE r.thread_id = ? AND ${SQL_RECAP_VISIBLE}
+       ORDER BY r.generated_at DESC, r.id DESC LIMIT 1`;
+
+export const SQL_LATEST_RECAP_ANY = `SELECT ${SQL_RECAP_COLUMNS}
+       FROM recaps AS r
+       WHERE r.thread_id = ? AND r.suppressed = 0 AND r.summary != ''
        ORDER BY r.generated_at DESC, r.id DESC LIMIT 1`;
 
 export const SQL_LIST_RECAPS = `SELECT ${SQL_RECAP_COLUMNS}
@@ -366,17 +501,34 @@ export const SQL_CLEANUP_RECAPS = `DELETE FROM recaps
               FROM recaps AS r
               INNER JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
               WHERE ${SQL_RECAP_INVALIDATED}
+                AND r.id NOT IN (
+                  SELECT id FROM (
+                    SELECT r2.id
+                    FROM recaps AS r2
+                    WHERE r2.thread_id = r.thread_id
+                    ORDER BY r2.generated_at DESC, r2.id DESC
+                    LIMIT 1
+                  ) AS newest
+                )
             ) AS invalidated
           )
-          OR id NOT IN (
+          OR id IN (
             SELECT id FROM (
               SELECT r.id
               FROM recaps AS r
               LEFT JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
               WHERE ${SQL_RECAP_VISIBLE}
-              ORDER BY r.generated_at DESC, r.id DESC
-              LIMIT ?
-            ) AS keepers
+                AND r.id NOT IN (
+                  SELECT id FROM (
+                    SELECT r.id
+                    FROM recaps AS r
+                    LEFT JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
+                    WHERE ${SQL_RECAP_VISIBLE}
+                    ORDER BY r.generated_at DESC, r.id DESC
+                    LIMIT ?
+                  ) AS keepers
+                )
+            ) AS extra_visible
           )`;
 
 export const SQL_INSERT_RECAP = `INSERT INTO recaps (id, thread_id, summary, automatic, generated_at, turns, model, suppressed)
@@ -415,7 +567,9 @@ export type GenerationLimiter = {
 };
 
 /** Caps in-flight recap workers. Extra requests wait until a slot is free or aborted. */
-export function createGenerationLimiter(maxConcurrent = DEFAULT_CONCURRENT_GENERATIONS): GenerationLimiter {
+export function createGenerationLimiter(
+  maxConcurrent = DEFAULT_CONCURRENT_GENERATIONS,
+): GenerationLimiter {
   let limit = clampConcurrentGenerations(maxConcurrent);
   let active = 0;
   const waiters: GenerationSlotWaiter[] = [];
