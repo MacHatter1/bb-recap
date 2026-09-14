@@ -25,7 +25,7 @@ those provider credentials.
 
 - Generate a recap from the thread header, command palette, or CLI.
 - Generate recaps automatically after a thread goes idle while Recap is running, without scanning every idle thread on startup.
-- Refresh a recap whenever the thread has moved on.
+- Refresh a recap whenever the thread has moved on. After the first recap, later recaps send the previous summary plus new turns instead of the whole thread.
 - Keep the recap worker hidden and clean it up after each attempt.
 - Retry automatic recaps at most three times for transient worker failures. Empty model responses, stale threads, and “not enough turns” do not retry.
 

@@ -9,6 +9,7 @@ import {
   SQL_HAS_RECAP_FOR_TURNS,
   SQL_INSERT_RECAP,
   SQL_LATEST_RECAP,
+  SQL_LATEST_RECAP_ANY,
   SQL_LIST_RECAPS,
   SQL_UPSERT_INVALIDATION,
 } from "../src/recap.ts";
@@ -46,34 +47,124 @@ function insertRecap(
 
 test("list and latest recaps skip invalidated and suppressed rows", () => {
   const db = openRecapDb();
-  insertRecap(db, { id: "old", threadId: "t1", summary: "old", generatedAt: 1, turns: 3 });
-  insertRecap(db, { id: "fresh", threadId: "t1", summary: "fresh", generatedAt: 3, turns: 4 });
-  insertRecap(db, { id: "hidden", threadId: "t2", summary: "hidden", generatedAt: 4, turns: 2 });
-  insertRecap(db, { id: "suppressed", threadId: "t3", summary: "", generatedAt: 5, turns: 2, suppressed: 1 });
+  insertRecap(db, {
+    id: "old",
+    threadId: "t1",
+    summary: "old",
+    generatedAt: 1,
+    turns: 3,
+  });
+  insertRecap(db, {
+    id: "fresh",
+    threadId: "t1",
+    summary: "fresh",
+    generatedAt: 3,
+    turns: 4,
+  });
+  insertRecap(db, {
+    id: "hidden",
+    threadId: "t2",
+    summary: "hidden",
+    generatedAt: 4,
+    turns: 2,
+  });
+  insertRecap(db, {
+    id: "suppressed",
+    threadId: "t3",
+    summary: "",
+    generatedAt: 5,
+    turns: 2,
+    suppressed: 1,
+  });
   db.prepare(SQL_UPSERT_INVALIDATION).run("t2", 10);
 
   const latest = db.prepare(SQL_LATEST_RECAP).get("t1") as { id: string };
   assert.equal(latest.id, "fresh");
 
   const listed = db.prepare(SQL_LIST_RECAPS).all(10) as Array<{ id: string }>;
-  assert.deepEqual(listed.map((row) => row.id), ["fresh", "old"]);
+  assert.deepEqual(
+    listed.map((row) => row.id),
+    ["fresh", "old"],
+  );
 
-  assert.equal(db.prepare(SQL_HAS_RECAP_FOR_TURNS).get("t1", 4) !== undefined, true);
-  assert.equal(db.prepare(SQL_HAS_RECAP_FOR_TURNS).get("t2", 2) === undefined, true);
+  assert.equal(
+    db.prepare(SQL_HAS_RECAP_FOR_TURNS).get("t1", 4) !== undefined,
+    true,
+  );
+  assert.equal(
+    db.prepare(SQL_HAS_RECAP_FOR_TURNS).get("t2", 2) === undefined,
+    true,
+  );
+  const hiddenContext = db.prepare(SQL_LATEST_RECAP_ANY).get("t2") as {
+    id: string;
+  };
+  assert.equal(hiddenContext.id, "hidden");
   db.close();
 });
 
-test("cleanup deletes suppressed and invalidated rows without selecting the mutating table directly", () => {
+test("cleanup deletes suppressed and extra visible rows but keeps the newest recap per thread", () => {
   const db = openRecapDb();
-  insertRecap(db, { id: "keep-new", threadId: "t1", summary: "keep", generatedAt: 30, turns: 5 });
-  insertRecap(db, { id: "keep-old", threadId: "t2", summary: "keep", generatedAt: 20, turns: 5 });
-  insertRecap(db, { id: "drop-visible", threadId: "t3", summary: "drop", generatedAt: 10, turns: 5 });
-  insertRecap(db, { id: "suppressed", threadId: "t4", summary: "", generatedAt: 40, turns: 5, suppressed: 1 });
-  insertRecap(db, { id: "invalidated", threadId: "t5", summary: "gone", generatedAt: 50, turns: 5 });
+  insertRecap(db, {
+    id: "keep-new",
+    threadId: "t1",
+    summary: "keep",
+    generatedAt: 30,
+    turns: 5,
+  });
+  insertRecap(db, {
+    id: "keep-old",
+    threadId: "t2",
+    summary: "keep",
+    generatedAt: 20,
+    turns: 5,
+  });
+  insertRecap(db, {
+    id: "drop-visible",
+    threadId: "t3",
+    summary: "drop",
+    generatedAt: 10,
+    turns: 5,
+  });
+  insertRecap(db, {
+    id: "suppressed",
+    threadId: "t4",
+    summary: "",
+    generatedAt: 40,
+    turns: 5,
+    suppressed: 1,
+  });
+  insertRecap(db, {
+    id: "stale",
+    threadId: "t5",
+    summary: "old",
+    generatedAt: 40,
+    turns: 4,
+  });
+  insertRecap(db, {
+    id: "invalidated",
+    threadId: "t5",
+    summary: "gone",
+    generatedAt: 50,
+    turns: 5,
+  });
   db.prepare(SQL_UPSERT_INVALIDATION).run("t5", 60);
 
   db.prepare(SQL_CLEANUP_RECAPS).run(2);
-  const remaining = db.prepare("SELECT id FROM recaps ORDER BY id").all() as Array<{ id: string }>;
-  assert.deepEqual(remaining.map((row) => row.id), ["keep-new", "keep-old"]);
+  const remaining = db
+    .prepare("SELECT id FROM recaps ORDER BY id")
+    .all() as Array<{ id: string }>;
+  assert.deepEqual(
+    remaining.map((row) => row.id),
+    ["invalidated", "keep-new", "keep-old"],
+  );
+  assert.equal(db.prepare(SQL_LATEST_RECAP).get("t5"), undefined);
+  const context = db.prepare(SQL_LATEST_RECAP_ANY).get("t5") as {
+    id: string;
+    summary: string;
+    turns: number;
+  };
+  assert.equal(context.id, "invalidated");
+  assert.equal(context.summary, "gone");
+  assert.equal(context.turns, 5);
   db.close();
 });
