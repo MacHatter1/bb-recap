@@ -31,7 +31,7 @@ import {
   SQL_LATEST_RECAP_ANY,
   SQL_LIST_RECAPS,
   SQL_UPSERT_INVALIDATION,
-} from "./recap.js";
+} from "./recap.ts";
 
 const MAX_ID_CHARS = 256;
 const MAX_STORED_RECAPS = 1_000;
@@ -252,6 +252,21 @@ export default async function plugin(bb: BbPluginApi) {
   const states = new Map<string, ThreadState>();
   const generationLimiter = createGenerationLimiter(config.maxConcurrent);
   let disposed = false;
+  // Thread-change events omit visibility, so verify it from the current snapshot.
+  const unsubscribeThreadChanges = bb.sdk.subscribe({
+    event: "thread:changed",
+    callback: ({ id }) => {
+      if (!id || disposed) return;
+      const controller = states.get(id)?.generationController;
+      if (!controller || controller.signal.aborted) return;
+      void bb.sdk.threads
+        .get({ threadId: id, signal: controller.signal })
+        .then((thread) => {
+          if (!isVisibleThread(thread.visibility)) controller.abort();
+        })
+        .catch(() => {});
+    },
+  });
 
   const publishChanged = (payload: Record<string, unknown>) => {
     if (disposed) return;
@@ -570,7 +585,21 @@ export default async function plugin(bb: BbPluginApi) {
     }
 
     const execution = await resolveExecution(thread, signal);
-    const raw = await runWorker(thread, input, execution, signal);
+    // Close the async setup window even if a realtime notification was missed.
+    const beforeWorker = (await bb.sdk.threads.get({
+      threadId,
+      signal,
+    })) as ThreadSnapshot;
+    if (!isVisibleThread(beforeWorker.visibility))
+      return result("hidden_thread", turns);
+    if (
+      beforeWorker.status !== "idle" ||
+      (expectedEpoch !== undefined && state.epoch !== expectedEpoch)
+    ) {
+      return result("stale", turns);
+    }
+    if (signal?.aborted) return result("aborted", turns);
+    const raw = await runWorker(beforeWorker, input, execution, signal);
     if (signal?.aborted) return result("aborted", turns);
     const summary = cleanRecapText(raw);
     if (summary === "") return result("empty_model_response", turns);
@@ -1001,6 +1030,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.onDispose(async () => {
     disposed = true;
+    unsubscribeThreadChanges();
     const pending: Promise<unknown>[] = [];
     for (const state of states.values()) clearTimer(state);
     for (const state of states.values()) {

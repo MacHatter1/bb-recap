@@ -9,6 +9,8 @@ All notable changes to Recap are documented here. The format follows
 ### Changed
 
 - Prevent recap generation for hidden threads, including hidden workers.
+- Abort generation when a thread becomes hidden and recheck visibility before
+  submitting its transcript.
 
 ## 0.2.1 - 2026-09-14
 
