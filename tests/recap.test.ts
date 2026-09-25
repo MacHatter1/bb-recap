@@ -27,6 +27,7 @@ import {
   parsePositiveInteger,
   RECAP_DISPLAY_MODES,
   shouldShowRecapBanner,
+  isVisibleThread,
   clampConcurrentGenerations,
   createGenerationLimiter,
 } from "../src/recap.ts";
@@ -177,6 +178,14 @@ test("retries automatic recaps only for transient failures", () => {
   assert.equal(
     shouldRetryAutomaticRecap({
       generated: false,
+      reason: "hidden_thread",
+      retryCount: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldRetryAutomaticRecap({
+      generated: false,
       reason: null,
       retryCount: 0,
     }),
@@ -275,6 +284,12 @@ test("hides recap banners inside inline message editors", () => {
   assert.equal(shouldShowRecapBanner("thread", true), false);
   assert.equal(shouldShowRecapBanner("thread", false), true);
   assert.equal(shouldShowRecapBanner("queued-message", false), false);
+});
+
+test("only visible threads are eligible for recaps", () => {
+  assert.equal(isVisibleThread("visible"), true);
+  assert.equal(isVisibleThread("hidden"), false);
+  assert.equal(isVisibleThread(undefined), false);
 });
 
 test("limits concurrent generation slots and queues the rest", async () => {

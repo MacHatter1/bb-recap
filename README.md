@@ -44,7 +44,7 @@ Long threads make it hard to pick up where you left off. You can reread the conv
 
 ### 🧵 Recap on demand
 
-Generate from the thread header, command palette, or CLI when the thread is idle.
+Generate from the thread header, command palette, or CLI for a visible, idle thread.
 
 </td>
 <td width="50%" valign="top">
@@ -164,7 +164,7 @@ bb recap list                  # List recent recaps
 | `bb recap show [thread-id] [--json]` | Show the latest valid recap. |
 | `bb recap list [--limit N] [--json]` | List recaps; the default limit is 50 and the maximum is 100. |
 
-Leave out `thread-id` in a thread-aware BB CLI context. Generation requires an idle thread. Add `--json` to any command for JSON output.
+Leave out `thread-id` in a thread-aware BB CLI context. Generation requires a visible, idle thread; hidden worker threads are not eligible. Add `--json` to any command for JSON output.
 
 The bundled [agent skill](skills/bb-recap/SKILL.md) explains when and how to use these commands.
 

@@ -39,6 +39,8 @@ function generationErrorMessage(reason: string | null): string {
       return "There is no conversation to recap yet.";
     case "not_enough_turns":
       return "There are not enough user turns for an automatic recap yet.";
+    case "hidden_thread":
+      return "Recaps cannot be generated for hidden threads.";
     case "already_exists":
       return "A recap already exists for this conversation state.";
     case "already_generating":

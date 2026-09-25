@@ -6,6 +6,10 @@ All notable changes to Recap are documented here. The format follows
 
 ## Unreleased
 
+### Changed
+
+- Prevent recap generation for hidden threads, including hidden workers.
+
 ## 0.2.1 - 2026-09-14
 
 ### Changed

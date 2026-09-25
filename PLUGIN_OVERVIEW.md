@@ -2,7 +2,7 @@ Recap creates short, display-only summaries of BB threads. It stores each recap 
 
 ## What it does
 
-- Generate from the thread header, command palette, or CLI. Manual generation requires an idle thread.
+- Generate from the thread header, command palette, or CLI. Manual generation requires a visible, idle thread; hidden worker threads are not eligible.
 - Create automatic recaps after a visible thread goes idle and reaches the configured user-turn minimum. Recap does not scan idle threads at startup.
 - Refresh from the previous recap plus new turns when a thread has moved on. A new turn hides the previous recap until another is generated.
 - Show a compact composer banner, a recap card, or no inline recap until you open the Recap panel.

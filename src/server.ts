@@ -12,6 +12,7 @@ import {
   MAX_TRANSCRIPT_CHARS,
   parsePositiveInteger,
   createGenerationLimiter,
+  isVisibleThread,
   MAX_CONCURRENT_GENERATIONS,
   MIN_CONCURRENT_GENERATIONS,
   mergeRecapSettingsPatch,
@@ -233,7 +234,7 @@ function parseStoredModelSelection(value: unknown): ModelSelection | undefined {
 }
 
 function isRecapEventTarget(thread: ThreadSnapshot, pluginId: string): boolean {
-  return thread.visibility === "visible" && thread.originPluginId !== pluginId;
+  return isVisibleThread(thread.visibility) && thread.originPluginId !== pluginId;
 }
 
 export default async function plugin(bb: BbPluginApi) {
@@ -548,6 +549,7 @@ export default async function plugin(bb: BbPluginApi) {
       threadId,
       signal,
     })) as ThreadSnapshot;
+    if (!isVisibleThread(thread.visibility)) return result("hidden_thread");
     const state = stateFor(threadId);
     if (thread.status !== "idle") return result("thread_not_idle");
     if (expectedEpoch !== undefined && state.epoch !== expectedEpoch)
@@ -577,6 +579,8 @@ export default async function plugin(bb: BbPluginApi) {
       threadId,
       signal,
     })) as ThreadSnapshot;
+    if (!isVisibleThread(current.visibility))
+      return result("hidden_thread", turns);
     if (
       current.status !== "idle" ||
       (expectedEpoch !== undefined && state.epoch !== expectedEpoch)
@@ -939,13 +943,13 @@ export default async function plugin(bb: BbPluginApi) {
       );
       await rearmAfterManual(threadId, generation, context.signal);
       if (!generation.recap) {
-        return {
-          exitCode: 1,
-          stderr:
-            generation.reason === "thread_not_idle"
-              ? "Wait for the thread to become idle before generating a recap."
-              : `Could not generate a recap (${generation.reason ?? "unknown error"}).`,
-        };
+        const message =
+          generation.reason === "thread_not_idle"
+            ? "Wait for the thread to become idle before generating a recap."
+            : generation.reason === "hidden_thread"
+              ? "Recaps cannot be generated for hidden threads."
+              : `Could not generate a recap (${generation.reason ?? "unknown error"}).`;
+        return { exitCode: 1, stderr: message };
       }
       return {
         exitCode: 0,
