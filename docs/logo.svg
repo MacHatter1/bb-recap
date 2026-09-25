@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <!-- Glyph: assets/icon.svg, the icon BB shows for Recap. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f766e"/>
+      <stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+  </defs>
+  <rect width="120" height="120" rx="28" fill="url(#bg)"/>
+  <g transform="translate(24 24) scale(3)" fill="none">
+    <path d="M6.25 4.75h11.5A2.25 2.25 0 0 1 20 7v7.25a2.25 2.25 0 0 1-2.25 2.25h-6.5L7 19.75V16.5H6.25A2.25 2.25 0 0 1 4 14.25V7a2.25 2.25 0 0 1 2.25-2.25Z" stroke="#fff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M8.25 9h7.5M8.25 12h5.25" stroke="#fff" stroke-width="1.75" stroke-linecap="round"/>
+  </g>
+</svg>

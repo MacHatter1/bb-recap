@@ -1,159 +1,196 @@
-# Recap for BB
+<div align="center">
 
-Recap creates short, display-only summaries of BB threads. A recap is stored
-separately from the thread transcript, so it is never added to the model's
-conversation context for the original thread.
+<img src="docs/logo.svg" width="96" height="96" alt="Recap logo">
 
-## Installation
+# Recap
 
-After the public `v0.2.1` release is published, install the Git version from
-BB's marketplace or directly with:
+### Get the thread context without re-reading the history.
+
+Read a short summary of a BB thread without scrolling back through the whole conversation. The recap stays separate from the thread's model context.<br>
+Generate one when you need it, or let Recap refresh it after a thread goes idle.
+
+![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue)
+![bb ≥ 0.40](https://img.shields.io/badge/bb-%E2%89%A5%200.40-0f766e)
+![Plugin SDK ≥ 0.4.29](https://img.shields.io/badge/plugin%20sdk-%E2%89%A5%200.4.29-2dd4bf)
+![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)
+
+[The problem](#the-problem) · [Features](#features) · [Install](#install) · [Where to find it](#where-to-find-it) · [How it works](#how-it-works) · [Safe by default](#safe-by-default) · [CLI](#cli) · [Development](#development) · [Licence](#licence)
+
+<br>
+
+<img src="output/playwright/showcase/26-natural-card.png" alt="Recap card showing a fictional launch-planning summary" width="900">
+
+</div>
+
+<br>
+
+> [!NOTE]
+> The screenshots are real BB captures populated with fictional Northstar launch-planning data.
+
+## The problem
+
+Long threads make it hard to pick up where you left off. You can reread the conversation, or keep a concise recap beside it without adding that recap to the original thread's model context.
+
+|  | Without Recap | With Recap |
+| --- | :---: | :---: |
+| Find the current state | Re-read the thread | Open its latest recap |
+| Keep the original thread context unchanged | Add any summary to the thread | Store the recap separately |
+
+## Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🧵 Recap on demand
+
+Generate from the thread header, command palette, or CLI when the thread is idle.
+
+</td>
+<td width="50%" valign="top">
+
+### ⏱️ Refresh automatically
+
+Recap can run after a visible thread goes idle and reaches the minimum user-turn count. It does not scan idle threads when the plugin starts.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🔄 Carry context forward
+
+When new turns arrive, the next recap uses the previous recap plus those new turns instead of sending the full earlier transcript again.
+
+</td>
+<td valign="top">
+
+### 🪟 Choose a display
+
+Show a compact banner, a larger recap card, or no inline recap until you open the Recap panel.
+
+</td>
+</tr>
+</table>
+
+<div align="center">
+<table>
+<tr>
+<td align="center"><img src="output/playwright/showcase/24-natural-compact-banner.png" alt="Compact recap banner with fictional Northstar launch details" width="440"><br><sub><b>Compact banner</b></sub></td>
+<td align="center"><img src="output/playwright/showcase/25-natural-expanded-banner.png" alt="Expanded recap banner with a fictional launch-planning summary" width="440"><br><sub><b>Expanded banner</b></sub></td>
+</tr>
+<tr>
+<td align="center"><img src="output/playwright/showcase/17-settings-focus-tall.png" alt="Recap behaviour settings with model, automatic generation, cleanup, and display previews" width="440"><br><sub><b>Model, behaviour, and display settings</b></sub></td>
+</tr>
+</table>
+</div>
+
+## Install
 
 ```sh
-bb plugin install git:https://github.com/MacHatter1/bb-recap.git@^0.2.1
+bb plugin install git:https://github.com/MacHatter1/bb-recap --yes
 ```
 
-Update a compatible release with `bb plugin update bb-recap`. The repository is
-the source of truth for releases; each release uses an immutable `vX.Y.Z` tag.
+Open a thread and choose **Recap** from its header or the command palette.
 
-Recap does not require its own account, API key, or other credentials. It uses
-the provider and model already configured in BB. The selected provider may have
-its own authentication and data-handling policy; Recap does not read or store
-those provider credentials.
+<details>
+<summary><b>Install from a local clone</b></summary>
 
-## What it does
+```sh
+git clone https://github.com/MacHatter1/bb-recap.git
+cd bb-recap
+npm ci
+bb plugin build
+bb plugin install path:$PWD --yes
+```
 
-- Generate a recap from the thread header, command palette, or CLI.
-- Generate recaps automatically after a thread goes idle while Recap is running, without scanning every idle thread on startup.
-- Refresh a recap whenever the thread has moved on. After the first recap, later recaps send the previous summary plus new turns instead of the whole thread.
-- Keep the recap worker hidden and clean it up after each attempt.
-- Retry automatic recaps at most three times for transient worker failures. Empty model responses, stale threads, and “not enough turns” do not retry.
+</details>
 
-Manual generation requires the thread to be idle. Automatic generation only
-runs for visible BB threads and waits until the configured user-turn minimum.
-Starting a new turn invalidates the previous in-thread recap until a newer one
-is generated. `bb recap list` and `bb recap show` both hide invalidated recaps.
+**Requirements:** BB **0.40+**. The plugin is built with `@get-bb/plugin-sdk` 0.4.29; its declared minimum is 0.4.21.
 
-## Showcase
+## Where to find it
 
-These screenshots use natural dummy data from a Northstar launch-planning
-thread.
-
-| Compact banner | Expanded banner |
+| Where | What |
 | --- | --- |
-| ![Compact banner](output/playwright/showcase/24-natural-compact-banner.png) | ![Expanded banner](output/playwright/showcase/25-natural-expanded-banner.png) |
+| **Thread header** | Open the Recap panel and generate a recap. |
+| **Command palette** | Choose **Recap: generate for this thread**. |
+| **Composer** | Read the latest recap inline; choose **On demand** to keep it out of the composer. |
+| **Plugin settings** | In **Recap behavior**, choose a model and configure automatic generation, cleanup, prompt, and display. |
+| **CLI** | Generate, show, or list recaps with `bb recap`. |
 
-| Recap card | Settings |
-| --- | --- |
-| ![Recap card](output/playwright/showcase/26-natural-card.png) | ![Recap settings](output/playwright/showcase/17-settings-focus-tall.png) |
+Automatic generation and cleanup are on by default, and the inline display starts as a compact banner. The idle delay defaults to 30 seconds, the minimum is 3 user turns, and up to 2 recap workers may run at once. You can set the delay from 0–86,400 seconds, the minimum from 1–100 turns, and concurrency from 1–5 workers. The prompt accepts up to 8,000 characters; recap text is limited to 1,200 characters.
 
-## In-thread display presets
+## How it works
 
-Choose **Display previews** on the plugin settings page. Click any preview card
-to save it:
+```mermaid
+flowchart TD
+    A["You request a recap or a visible thread goes idle"] --> B["Read a bounded transcript"]
+    B --> C{"Previous recap and new turns?"}
+    C -->|Yes| D["Combine previous recap with new turns"]
+    C -->|No| E["Use the available transcript"]
+    D --> F["Run a hidden BB worker"]
+    E --> F
+    F --> G["Store recap separately"]
+    G --> H["Show it in the panel, composer, or CLI"]
+```
 
-- **Compact banner** — a quiet one-line recap above the composer. Click the
-  recap to expand or collapse it when more detail is needed.
-- **Recap card** — a larger card with timestamp, generation type, model, and a
-  refresh action.
-- **On demand** — keeps the composer clear; open the Recap panel when needed.
+- **Bounded input.** Recap reads up to 120,000 transcript characters and limits generated text to 1,200 characters.
+- **Incremental refresh.** When a thread has new turns, Recap sends the earlier summary plus the new turns. The worker is archived and stopped after each attempt.
+- **Separate storage.** Recaps live in Recap's namespaced SQLite database. A new thread turn hides the earlier recap until a fresh one is generated.
+- **Automatic runs.** Recap listens for visible threads going idle, waits for the configured delay and turn minimum, and retries transient failures up to three times.
 
-## Settings
+## Safe by default
 
-The single **Recap behavior** card on the plugin settings page controls the
-model, automatic behavior, cleanup, prompt, and display previews. These
-settings are stored by Recap itself; use this card rather than `bb plugin config`.
-The native BB provider/model picker uses BB's live model catalog and saves the
-selected provider, model,
-reasoning level, and service tier. Without a saved selection, recaps use BB's
-current default model.
-
-`afterSeconds` is capped at 86,400 seconds. `minTurns` accepts 1–100 user
-turns. `maxConcurrent` accepts 1–5 recap workers (default 2). Lowering it does
-not cancel workers that are already running. The prompt is capped at 8,000
-characters; an empty prompt cannot be saved (use **Reset to default**). Display
-previews apply as soon as you click them and do not save the rest of the form.
-Saving the form does not overwrite a layout that was applied while the form was
-open. Empty number fields are restored on blur instead of snapping while you
-type. Auto-cleanup removes
-suppressed attempts, invalidated recaps, and visible records beyond the newest
-1,000; it is enabled by
-default and runs when the plugin starts, when settings are saved, and after a
-recap is generated. Settings changes apply immediately.
-
-## Permissions and agent behavior
-
-Manual and automatic generation can create a hidden BB worker thread. Automatic
-generation is limited to eligible visible threads, and the worker receives a
-bounded transcript plus the configured recap instructions. The worker is
-created with BB's **Accept Edits** permission mode — the least-permissive option
-`threads.spawn` currently accepts (there is no readonly spawn mode) — and is
-instructed to produce only a recap. Recap registers no agent tools and does not
-intentionally request file edits or commands, but the worker remains a normal BB
-thread subject to the provider and host permission model. Hidden is an
-organizational setting, not a security boundary, so install only plugins you
-trust.
-
-Recap archives and stops each worker after it finishes, including failed or
-cancelled attempts. Auto-cleanup only deletes rows from Recap's own namespaced
-database: suppressed attempts, invalidated recaps, and visible records beyond
-the newest 1,000. It
-never deletes BB threads, messages, files, or projects.
+- 🛡️ **Separate from the conversation.** Recaps are stored outside the original thread transcript and are not added to its model context.
+- 🌐 **Provider handling applies.** The bounded transcript goes to the provider selected in Recap or BB's default provider. That provider may process it remotely under its own policy; Recap has no separate account or API key.
+- ⚠️ **A hidden worker is still a worker.** BB currently offers `accept-edits` as the least-permissive mode for spawned threads; it is not read-only. Recap instructs the worker to return a recap only, then archives and stops it. The worker remains subject to BB's tools and permission model, so install only plugins you trust.
+- 🧹 **Cleanup stays in Recap's database.** When enabled, cleanup removes suppressed attempts, older invalidated recaps, and visible records beyond the newest 1,000. It never deletes BB threads, messages, files, or projects.
 
 ## CLI
 
 ```sh
-bb recap recap [thread-id] [--json]
-bb recap summarize [thread-id] [--json]
-bb recap show [thread-id] [--json]
-bb recap list [--limit N] [--json]
+bb recap recap                 # Generate for this thread
+bb recap show                  # Show this thread's latest recap
+bb recap list                  # List recent recaps
 ```
 
-Leave out `thread-id` when running from a thread-aware BB CLI context. The
-`summarize` command is an alias for `recap`.
+<details>
+<summary><b>All commands and options</b></summary>
 
-## Data and safety
+| Command | Does |
+| --- | --- |
+| `bb recap recap [thread-id] [--json]` | Generate a recap. |
+| `bb recap summarize [thread-id] [--json]` | Alias for `recap`. |
+| `bb recap show [thread-id] [--json]` | Show the latest valid recap. |
+| `bb recap list [--limit N] [--json]` | List recaps; the default limit is 50 and the maximum is 100. |
 
-Recaps live in the plugin's namespaced SQLite database. When auto-cleanup is
-enabled, only the latest 1,000 visible records are kept (invalidated and
-suppressed rows are removed). The source transcript
-is bounded and escaped before it is sent to the worker, and it is wrapped as
-untrusted session data. Recap has no direct network requests, filesystem
-access, subprocesses, telemetry, or synchronization service. The configured BB
-provider receives the transcript through BB's normal model runtime and may
-process it remotely according to that provider's policy. Generated text is
-normalized and limited to 1,200 characters.
+Leave out `thread-id` in a thread-aware BB CLI context. Generation requires an idle thread. Add `--json` to any command for JSON output.
 
-Recap's plugin ID is `bb-recap`, and its CLI command is `recap`. Its storage is
-namespaced and it ignores its own worker threads, but it does not coordinate
-with other recap plugins. If multiple recap plugins are enabled, each may keep
-its own separate summaries.
+The bundled [agent skill](skills/bb-recap/SKILL.md) explains when and how to use these commands.
 
-## Maintenance
-
-Runtime dependencies are kept minimal: Recap uses `zod`; BB-shimmed UI
-packages and build/type tooling remain development-only. Dependency updates are
-manually reviewed and must preserve the BB and plugin SDK engine ranges. No
-Dependabot update is merged or released without the plugin tests, typecheck,
-managed production install, and BB bundle build passing.
+</details>
 
 ## Development
 
-Requirements: BB 0.40 or newer and the BB plugin SDK 0.4.21 or newer.
-
 ```sh
-npm install
+npm ci
 npm test
-npx tsc --noEmit
-bb plugin types --check .
-bb plugin build .
-bb plugin reload bb-recap
+npm run typecheck
+bb plugin build
 ```
 
-The main files are:
+```text
+src/server.ts       Settings, storage, RPC, CLI, scheduling, and thread events
+src/app.tsx          Thread, composer, command palette, and settings UI
+src/recap.ts         Transcript, prompt, settings, and storage helpers
+skills/bb-recap/     Bundled agent skill for the CLI
+output/playwright/   Fictional-data showcase captures
+```
 
-- `src/server.ts` — settings, storage, RPC, CLI, scheduling, and thread events.
-- `src/app.tsx` — BB thread, sidebar, command palette, and settings UI.
-- `src/recap.ts` — bounded transcript and prompt helpers.
-- `tests/recap.test.ts` — tests for the pure recap helpers.
-- `tests/storage.test.ts` — SQLite tests for list, invalidation, and cleanup.
+**Tests** cover transcript construction, prompt boundaries, settings and retry rules, concurrency, incremental recaps, and SQLite list/cleanup behaviour.
+
+`PLUGIN_OVERVIEW.md` is the store listing. Keep it in step with `bb.description` in `package.json`.
+
+## Licence
+
+[MIT](LICENSE)

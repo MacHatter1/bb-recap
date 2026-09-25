@@ -1,7 +1,7 @@
 {
   "name": "bb-recap",
   "version": "0.2.1",
-  "description": "Manual and automatic recaps for BB threads",
+  "description": "Generate concise, display-only summaries for BB threads",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MacHatter1/bb-recap.git",
@@ -52,12 +52,14 @@
     "vaul": "^1.1.2"
   },
   "scripts": {
-    "test": "node --test tests/*.test.ts"
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "files": [
     "README.md",
     "LICENSE",
     "assets",
+    "skills",
     "src",
     "dist/app.js",
     "dist/app.css",
