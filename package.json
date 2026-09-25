@@ -1,6 +1,6 @@
 {
   "name": "bb-recap",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Generate concise, display-only summaries for BB threads",
   "repository": {
     "type": "git",
