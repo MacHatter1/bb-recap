@@ -6,6 +6,8 @@ All notable changes to Recap are documented here. The format follows
 
 ## Unreleased
 
+## 0.2.3 - 2026-10-01
+
 ### Fixed
 
 - Keep incremental recaps correct when older timeline pages fall outside the bounded history window, and retain context from existing recaps after upgrading.
