@@ -135,7 +135,7 @@ flowchart TD
 ```
 
 - **Bounded input.** Recap reads up to 120,000 transcript characters and limits generated text to 1,200 characters.
-- **Incremental refresh.** When a thread has new turns, Recap sends the earlier summary plus the new turns. The worker is archived and stopped after each attempt.
+- **Incremental refresh.** When a thread has new turns, Recap locates the saved user-row ID and sends the earlier summary plus the new turns. If that row is outside the bounded history window, or the recap predates cursor tracking, it combines the earlier summary with the available transcript. The worker is archived and stopped after each attempt.
 - **Separate storage.** Recaps live in Recap's namespaced SQLite database. A new thread turn hides the earlier recap until a fresh one is generated.
 - **Automatic runs.** Recap listens for visible threads going idle, waits for the configured delay and turn minimum, and retries transient failures up to three times.
 

@@ -15,6 +15,7 @@ import type {
 } from "@get-bb/plugin-sdk/app";
 import {
   DEFAULT_RECAP_PROMPT,
+  generationErrorMessage,
   isBlankRecapPrompt,
   MAX_CONCURRENT_GENERATIONS,
   MAX_RECAP_PROMPT_CHARS,
@@ -32,31 +33,6 @@ import type { RecapDisplayMode } from "./recap";
 import type { ModelSelection, Recap, RecapSettings, rpcContract } from "./server";
 
 const RECAP_CHANGED = "recap-changed";
-
-function generationErrorMessage(reason: string | null): string {
-  switch (reason) {
-    case "no_conversation":
-      return "There is no conversation to recap yet.";
-    case "not_enough_turns":
-      return "There are not enough user turns for an automatic recap yet.";
-    case "hidden_thread":
-      return "Recaps cannot be generated for hidden threads.";
-    case "already_exists":
-      return "A recap already exists for this conversation state.";
-    case "already_generating":
-      return "A recap is already being generated.";
-    case "stale":
-      return "The thread changed while the recap was generating. Try again.";
-    case "aborted":
-      return "Recap generation was cancelled.";
-    case "empty_model_response":
-      return "The recap model returned no usable summary.";
-    case "suppressed":
-      return "This recap was suppressed because the model response was too long.";
-    default:
-      return reason ? `Could not generate a recap (${reason}).` : "No recap was generated.";
-  }
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -124,7 +100,8 @@ function useThreadRecap(threadId: string) {
   const [recap, setRecap] = useState<Recap | null>(null);
   const [generating, setGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -132,9 +109,9 @@ function useThreadRecap(threadId: string) {
       const next = await rpc.call("recap_get", { threadId });
       setRecap(next.recap);
       setGenerating(next.generating);
-      setError(null);
+      setReadError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setReadError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setLoading(false);
     }
@@ -149,22 +126,24 @@ function useThreadRecap(threadId: string) {
   }, [reload, threadId]);
   useRealtime(RECAP_CHANGED, onSignal);
 
+  useEffect(() => { setGenerationError(null); }, [threadId]);
+
   const generate = useCallback(async () => {
     setGenerating(true);
-    setError(null);
+    setGenerationError(null);
     try {
       const next = await rpc.call("recap_generate", { threadId, automatic: false });
       setRecap(next.recap);
-      if (!next.recap && next.reason !== "suppressed") setError(generationErrorMessage(next.reason));
+      if (!next.recap) setGenerationError(generationErrorMessage(next.reason));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setGenerationError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setGenerating(false);
       void reload();
     }
   }, [reload, rpc, threadId]);
 
-  return { recap, generating, loading, error, generate };
+  return { recap, generating, loading, error: generationError ?? readError, generate };
 }
 
 function RecapPanel({ threadId, params }: PluginThreadPanelProps) {

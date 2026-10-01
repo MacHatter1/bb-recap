@@ -192,6 +192,11 @@ function workRowText(row: UnknownRecord): string | undefined {
     : undefined;
 }
 
+function isUserConversation(row: UnknownRecord, threadId?: string): boolean {
+  return row.kind === "conversation" && row.role === "user" &&
+    (threadId === undefined || row.threadId === threadId);
+}
+
 /** Convert BB timeline rows into a bounded transcript for the recap worker. */
 export function buildConversationText(
   rows: unknown[],
@@ -206,11 +211,7 @@ export function buildConversationText(
   let seenUserTurns = 0;
 
   for (const row of flattenRows(rows)) {
-    if (
-      row.kind === "conversation" &&
-      row.role === "user" &&
-      (threadId === undefined || row.threadId === threadId)
-    ) {
+    if (isUserConversation(row, threadId)) {
       seenUserTurns += 1;
     }
     if (skipTurns > 0 && seenUserTurns <= skipTurns) continue;
@@ -249,51 +250,53 @@ export function buildConversationText(
 }
 
 export function countUserTurns(rows: unknown[], threadId?: string): number {
-  return flattenRows(rows).filter(
-    (row) =>
-      row.kind === "conversation" &&
-      row.role === "user" &&
-      (threadId === undefined || row.threadId === threadId),
-  ).length;
+  return flattenRows(rows).filter((row) => isUserConversation(row, threadId)).length;
+}
+
+export function latestUserRowId(rows: unknown[], threadId?: string): string | null {
+  const users = flattenRows(rows).filter((row) => isUserConversation(row, threadId));
+  const id = users.at(-1)?.id;
+  return typeof id === "string" && id !== "" ? id : null;
 }
 
 export type RecapContext = {
   summary: string;
   turns: number;
+  lastUserRowId?: string | null;
 };
 
 /** First recap is the full (capped) transcript; later recaps send previous summary + new turns. */
 export function buildRecapWorkerInput(
   rows: unknown[],
   previous: RecapContext | null | undefined,
-  turns: number,
   threadId?: string,
   maxChars = MAX_TRANSCRIPT_CHARS,
 ): { transcript: string; previousRecap: string | undefined } {
-  const incremental =
-    previous !== undefined &&
-    previous !== null &&
-    previous.summary !== "" &&
-    previous.turns < turns;
-  if (!incremental) {
+  if (!previous?.summary) {
     return {
       transcript: buildConversationText(rows, maxChars, 0, threadId),
       previousRecap: undefined,
     };
   }
-  const transcript = buildConversationText(
-    rows,
-    maxChars,
-    previous.turns,
-    threadId,
-  );
-  if (transcript === "") {
-    return {
-      transcript: buildConversationText(rows, maxChars, 0, threadId),
-      previousRecap: undefined,
-    };
+  let cursorTurns = 0;
+  let foundCursor = false;
+  for (const row of flattenRows(rows)) {
+    if (!isUserConversation(row, threadId)) continue;
+    cursorTurns += 1;
+    if (previous.lastUserRowId != null && row.id === previous.lastUserRowId) {
+      foundCursor = true;
+      break;
+    }
   }
-  return { transcript, previousRecap: previous.summary };
+  const delta = foundCursor
+    ? buildConversationText(rows, maxChars, cursorTurns, threadId)
+    : "";
+  // Legacy recaps and cursors outside the fetched window cannot provide an offset.
+  // Retain their summary and use the available history rather than dropping context.
+  return {
+    transcript: delta || buildConversationText(rows, maxChars, 0, threadId),
+    previousRecap: previous.summary,
+  };
 }
 
 export function cleanRecapText(raw: string): string {
@@ -440,18 +443,28 @@ export function recapSettingsFormPatch(
 
 export const MAX_AUTOMATIC_RECAP_RETRIES = 3;
 
-const NON_RETRYABLE_AUTOMATIC_REASONS = new Set([
-  "not_enough_turns",
-  "no_conversation",
-  "stale",
-  "already_generating",
-  "aborted",
-  "already_exists",
-  "empty_model_response",
-  "hidden_thread",
-  "thread_not_idle",
-  "suppressed",
-]);
+export const GENERATION_REASONS = {
+  no_conversation: "There is no conversation to recap yet.",
+  not_enough_turns: "There are not enough user turns for an automatic recap yet.",
+  hidden_thread: "Recaps cannot be generated for hidden threads.",
+  already_exists: "A recap already exists for this conversation state.",
+  already_generating: "A recap is already being generated.",
+  stale: "The thread changed while the recap was generating. Try again.",
+  aborted: "Recap generation was cancelled.",
+  empty_model_response: "The recap model returned no usable summary.",
+  suppressed: "This recap was suppressed because the model response was too long.",
+  thread_not_idle: "Wait for the thread to become idle before generating a recap.",
+  automatic_disabled: "Automatic recaps are disabled.",
+} as const;
+
+export type GenerationReason = keyof typeof GENERATION_REASONS;
+export const GENERATION_REASON_OPTIONS = Object.keys(GENERATION_REASONS) as [GenerationReason, ...GenerationReason[]];
+
+export function generationErrorMessage(reason: string | null): string {
+  return reason !== null && Object.hasOwn(GENERATION_REASONS, reason)
+    ? GENERATION_REASONS[reason as GenerationReason]
+    : reason ? `Could not generate a recap (${reason}).` : "No recap was generated.";
+}
 
 export function shouldRetryAutomaticRecap(options: {
   generated: boolean;
@@ -462,7 +475,7 @@ export function shouldRetryAutomaticRecap(options: {
   if (options.retryCount >= MAX_AUTOMATIC_RECAP_RETRIES) return false;
   if (
     options.reason !== null &&
-    NON_RETRYABLE_AUTOMATIC_REASONS.has(options.reason)
+    Object.hasOwn(GENERATION_REASONS, options.reason)
   )
     return false;
   return true;
@@ -471,7 +484,7 @@ export function shouldRetryAutomaticRecap(options: {
 /** Least-permissive mode `threads.spawn` currently accepts (no readonly). */
 export const RECAP_WORKER_PERMISSION_MODE = "accept-edits" as const;
 
-const SQL_RECAP_COLUMNS = `r.id, r.thread_id, r.summary, r.automatic, r.generated_at, r.turns, r.model, r.suppressed`;
+const SQL_RECAP_COLUMNS = `r.id, r.thread_id, r.summary, r.automatic, r.generated_at, r.turns, r.model, r.suppressed, r.last_user_row_id`;
 export const SQL_RECAP_VISIBLE = `(r.suppressed = 0 AND (i.invalidated_at IS NULL OR r.generated_at > i.invalidated_at))`;
 export const SQL_RECAP_INVALIDATED = `(r.generated_at <= i.invalidated_at)`;
 
@@ -492,10 +505,10 @@ export const SQL_LIST_RECAPS = `SELECT ${SQL_RECAP_COLUMNS}
        WHERE ${SQL_RECAP_VISIBLE}
        ORDER BY r.generated_at DESC, r.id DESC LIMIT ?`;
 
-export const SQL_HAS_RECAP_FOR_TURNS = `SELECT 1 AS present
+export const SQL_HAS_RECAP_FOR_CURSOR = `SELECT 1 AS present
        FROM recaps AS r
        LEFT JOIN recap_invalidations AS i ON i.thread_id = r.thread_id
-       WHERE r.thread_id = ? AND r.turns = ? AND ${SQL_RECAP_VISIBLE}
+       WHERE r.thread_id = ? AND r.last_user_row_id = ? AND ${SQL_RECAP_VISIBLE}
        LIMIT 1`;
 
 export const SQL_CLEANUP_RECAPS = `DELETE FROM recaps
@@ -511,6 +524,7 @@ export const SQL_CLEANUP_RECAPS = `DELETE FROM recaps
                     SELECT r2.id
                     FROM recaps AS r2
                     WHERE r2.thread_id = r.thread_id
+                      AND r2.suppressed = 0 AND r2.summary != ''
                     ORDER BY r2.generated_at DESC, r2.id DESC
                     LIMIT 1
                   ) AS newest
@@ -536,8 +550,8 @@ export const SQL_CLEANUP_RECAPS = `DELETE FROM recaps
             ) AS extra_visible
           )`;
 
-export const SQL_INSERT_RECAP = `INSERT INTO recaps (id, thread_id, summary, automatic, generated_at, turns, model, suppressed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+export const SQL_INSERT_RECAP = `INSERT INTO recaps (id, thread_id, summary, automatic, generated_at, turns, model, suppressed, last_user_row_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 export const SQL_UPSERT_INVALIDATION = `INSERT INTO recap_invalidations (thread_id, invalidated_at) VALUES (?, ?)
        ON CONFLICT(thread_id) DO UPDATE SET invalidated_at = excluded.invalidated_at`;
@@ -556,6 +570,9 @@ export const SQL_CREATE_RECAPS = `CREATE TABLE IF NOT EXISTS recaps (
 export const SQL_CREATE_RECAPS_INDEX = `CREATE INDEX IF NOT EXISTS recaps_thread_generated_at ON recaps(thread_id, generated_at DESC)`;
 
 export const SQL_CREATE_INVALIDATIONS = `CREATE TABLE IF NOT EXISTS recap_invalidations (thread_id TEXT PRIMARY KEY, invalidated_at INTEGER NOT NULL)`;
+
+// Existing migration statements are immutable; append this for installed databases.
+export const SQL_ADD_RECAP_CURSOR = `ALTER TABLE recaps ADD COLUMN last_user_row_id TEXT`;
 
 type GenerationSlotWaiter = {
   signal: AbortSignal;

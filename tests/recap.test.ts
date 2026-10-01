@@ -376,6 +376,7 @@ test("later recaps send the previous summary plus new turns", () => {
       role: "user",
       threadId: "t1",
       text: "Add JWT auth in src/auth.ts",
+      id: "user-1",
     },
     { kind: "work", workKind: "file-change", change: { path: "src/auth.ts" } },
     {
@@ -389,6 +390,7 @@ test("later recaps send the previous summary plus new turns", () => {
       role: "user",
       threadId: "t1",
       text: "Cover it in tests/auth.test.ts",
+      id: "user-2",
     },
     {
       kind: "work",
@@ -406,6 +408,7 @@ test("later recaps send the previous summary plus new turns", () => {
       role: "user",
       threadId: "t1",
       text: "Replace JWT with session cookies",
+      id: "user-3",
     },
     { kind: "work", workKind: "file-change", change: { path: "src/auth.ts" } },
     {
@@ -418,14 +421,15 @@ test("later recaps send the previous summary plus new turns", () => {
   const previous = {
     summary: "We added JWT auth in src/auth.ts, covered by tests/auth.test.ts.",
     turns: 2,
+    lastUserRowId: "user-2",
   };
 
-  const first = buildRecapWorkerInput(rows.slice(0, 6), null, 2, "t1");
+  const first = buildRecapWorkerInput(rows.slice(0, 6), null, "t1");
   assert.equal(first.previousRecap, undefined);
   assert.match(first.transcript, /JWT auth/);
   assert.match(first.transcript, /tests\/auth\.test\.ts/);
 
-  const next = buildRecapWorkerInput(rows, previous, 3, "t1");
+  const next = buildRecapWorkerInput(rows, previous, "t1");
   assert.equal(next.previousRecap, previous.summary);
   assert.match(next.transcript, /session cookies/);
   assert.doesNotMatch(next.transcript, /Add JWT auth in src\/auth\.ts/);
@@ -442,23 +446,22 @@ test("later recaps send the previous summary plus new turns", () => {
   assert.match(prompt, /session cookies/);
   assert.match(prompt, /replacement recap for the whole session/);
 
-  const refresh = buildRecapWorkerInput(rows, previous, 2, "t1");
-  assert.equal(refresh.previousRecap, undefined);
+  const refresh = buildRecapWorkerInput(rows.slice(0, 6), previous, "t1");
+  assert.equal(refresh.previousRecap, previous.summary);
   assert.match(refresh.transcript, /JWT auth/);
 });
 
 test("falls back to the full transcript when the delta is empty", () => {
   const rows = [
-    { kind: "conversation", role: "user", threadId: "t1", text: "Hello" },
+    { id: "user-1", kind: "conversation", role: "user", threadId: "t1", text: "Hello" },
     { kind: "conversation", role: "user", threadId: "t1" },
   ];
   const input = buildRecapWorkerInput(
     rows,
-    { summary: "You had just begun this session.", turns: 1 },
-    2,
+    { summary: "You had just begun this session.", turns: 1, lastUserRowId: "user-1" },
     "t1",
   );
-  assert.equal(input.previousRecap, undefined);
+  assert.equal(input.previousRecap, "You had just begun this session.");
   assert.match(input.transcript, /Hello/);
 });
 
@@ -470,6 +473,7 @@ test("incremental recap input stays near the new-turn size", () => {
       role: "user",
       threadId: "t1",
       text: `Turn ${i}: work on file-${i}.ts ${"x".repeat(200)}`,
+      id: `user-${i}`,
     });
     rows.push({
       kind: "conversation",
@@ -480,14 +484,37 @@ test("incremental recap input stays near the new-turn size", () => {
   }
   let fullCost = 0;
   let incrementalCost = 0;
-  let previous: { summary: string; turns: number } | null = null;
+  let previous: { summary: string; turns: number; lastUserRowId: string } | null = null;
   for (let turns = 3; turns <= 8; turns += 1) {
     const slice = rows.slice(0, turns * 2);
     fullCost += buildConversationText(slice).length;
-    const input = buildRecapWorkerInput(slice, previous, turns, "t1");
+    const input = buildRecapWorkerInput(slice, previous, "t1");
     incrementalCost +=
       input.transcript.length + (input.previousRecap?.length ?? 0);
-    previous = { summary: `We worked on file-${turns}.ts.`, turns };
+    previous = { summary: `We worked on file-${turns}.ts.`, turns, lastUserRowId: `user-${turns}` };
   }
   assert.ok(incrementalCost < fullCost / 2);
+});
+
+test("incremental refresh follows a stable row ID when the history window shifts", () => {
+  const rows = Array.from({ length: 12 }, (_, index) => ({
+    id: `user-${index + 1}`,
+    kind: "conversation", role: "user", threadId: "t1",
+    text: `Turn ${index + 1}`,
+  }));
+  const previous = { summary: "Earlier work", turns: 10, lastUserRowId: "user-10" };
+  const next = buildRecapWorkerInput(rows.slice(1), previous, "t1");
+  assert.equal(next.previousRecap, previous.summary);
+  assert.match(next.transcript, /Turn 11/);
+  assert.match(next.transcript, /Turn 12/);
+  assert.doesNotMatch(next.transcript, /Turn 10/);
+});
+
+test("retains the previous summary when its cursor falls outside the bounded window", () => {
+  const rows = [{ id: "new", kind: "conversation", role: "user", threadId: "t1", text: "New work" }];
+  for (const lastUserRowId of ["old", null]) {
+    const input = buildRecapWorkerInput(rows, { summary: "Earlier decisions", turns: 10, lastUserRowId }, "t1");
+    assert.equal(input.previousRecap, "Earlier decisions");
+    assert.match(input.transcript, /New work/);
+  }
 });
