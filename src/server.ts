@@ -7,6 +7,8 @@ import {
   buildRecapWorkerInput,
   cleanRecapText,
   countUserTurns,
+  GENERATION_REASON_OPTIONS,
+  latestUserRowId,
   MAX_RECAP_CHARS,
   MAX_RECAP_PROMPT_CHARS,
   MAX_TRANSCRIPT_CHARS,
@@ -22,16 +24,18 @@ import {
   RECAP_WORKER_PERMISSION_MODE,
   shouldRetryAutomaticRecap,
   SQL_CLEANUP_RECAPS,
+  SQL_ADD_RECAP_CURSOR,
   SQL_CREATE_INVALIDATIONS,
   SQL_CREATE_RECAPS,
   SQL_CREATE_RECAPS_INDEX,
-  SQL_HAS_RECAP_FOR_TURNS,
+  SQL_HAS_RECAP_FOR_CURSOR,
   SQL_INSERT_RECAP,
   SQL_LATEST_RECAP,
   SQL_LATEST_RECAP_ANY,
   SQL_LIST_RECAPS,
   SQL_UPSERT_INVALIDATION,
 } from "./recap.ts";
+import type { GenerationReason } from "./recap.ts";
 
 const MAX_ID_CHARS = 256;
 const MAX_STORED_RECAPS = 1_000;
@@ -49,6 +53,7 @@ const recapSchema = z
     automatic: z.boolean(),
     generatedAt: z.number(),
     turns: z.number(),
+    lastUserRowId: z.string().nullable(),
     model: z
       .string()
       .min(1)
@@ -129,7 +134,7 @@ export const rpcContract = defineRpcContract({
         recap: recapSchema.nullable(),
         generated: z.boolean(),
         suppressed: z.boolean(),
-        reason: z.string().nullable(),
+        reason: z.enum(GENERATION_REASON_OPTIONS).nullable(),
         turns: z.number().nullable(),
       })
       .strict(),
@@ -177,7 +182,7 @@ type ThreadState = {
   timer?: ReturnType<typeof setTimeout>;
   epoch: number;
   inFlight: boolean;
-  lastAutoTurns: number;
+  lastAutoUserRowId: string | null;
   idleThread?: ThreadSnapshot;
   autoRetryCount: number;
   generationController?: AbortController;
@@ -189,7 +194,7 @@ type GenerationResult = {
   recap: Recap | null;
   generated: boolean;
   suppressed: boolean;
-  reason: string | null;
+  reason: GenerationReason | null;
   turns: number | null;
 };
 
@@ -202,10 +207,11 @@ type StoredRecapRow = {
   turns: number;
   model: string;
   suppressed: number;
+  last_user_row_id: string | null;
 };
 
 function result(
-  reason: string | null,
+  reason: GenerationReason | null,
   turns: number | null = null,
 ): GenerationResult {
   return { recap: null, generated: false, suppressed: false, reason, turns };
@@ -219,6 +225,7 @@ function rowToRecap(row: StoredRecapRow): Recap {
     automatic: row.automatic === 1,
     generatedAt: row.generated_at,
     turns: row.turns,
+    lastUserRowId: row.last_user_row_id,
     model: row.model,
     suppressed: row.suppressed === 1,
   };
@@ -237,12 +244,39 @@ function isRecapEventTarget(thread: ThreadSnapshot, pluginId: string): boolean {
   return isVisibleThread(thread.visibility) && thread.originPluginId !== pluginId;
 }
 
+type ProviderCatalog = Awaited<ReturnType<BbPluginApi["sdk"]["providers"]["models"]>>;
+
+function normalizeModelSelection(
+  selection: ModelSelection,
+  model: ProviderCatalog["models"][number],
+  provider: ProviderCatalog["providers"][number] | undefined,
+): ModelSelection {
+  const supported = model.supportedReasoningEfforts.map(
+    (effort) => effort.reasoningEffort,
+  );
+  const serviceTier =
+    selection.serviceTier &&
+    provider?.serviceTiers?.some((tier) => tier.id === selection.serviceTier)
+      ? selection.serviceTier
+      : undefined;
+  return {
+    providerId: selection.providerId,
+    model: model.model,
+    reasoningLevel:
+      supported.length > 0 && !supported.includes(selection.reasoningLevel)
+        ? model.defaultReasoningEffort
+        : selection.reasoningLevel,
+    ...(serviceTier ? { serviceTier } : {}),
+  };
+}
+
 export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [
     SQL_CREATE_RECAPS,
     SQL_CREATE_RECAPS_INDEX,
     SQL_CREATE_INVALIDATIONS,
+    SQL_ADD_RECAP_CURSOR,
   ]);
 
   let config = parseStoredSettings(await bb.storage.kv.get(SETTINGS_KEY));
@@ -292,7 +326,7 @@ export default async function plugin(bb: BbPluginApi) {
     const created: ThreadState = {
       epoch: 0,
       inFlight: false,
-      lastAutoTurns: 0,
+      lastAutoUserRowId: null,
       autoRetryCount: 0,
     };
     states.set(threadId, created);
@@ -331,8 +365,9 @@ export default async function plugin(bb: BbPluginApi) {
 
   if (config.autoCleanup) cleanupStoredRecaps();
 
-  const hasRecapForTurns = (threadId: string, turns: number): boolean => {
-    const row = db.prepare(SQL_HAS_RECAP_FOR_TURNS).get(threadId, turns) as
+  const hasRecapForCursor = (threadId: string, cursor: string | null): boolean => {
+    if (cursor === null) return false;
+    const row = db.prepare(SQL_HAS_RECAP_FOR_CURSOR).get(threadId, cursor) as
       | { present: number }
       | undefined;
     return row !== undefined;
@@ -350,6 +385,7 @@ export default async function plugin(bb: BbPluginApi) {
     turns: number,
     model: string,
     suppressed: boolean,
+    lastUserRowId: string | null,
   ): Recap => {
     const stored: Recap = {
       id: randomUUID(),
@@ -360,6 +396,7 @@ export default async function plugin(bb: BbPluginApi) {
       turns,
       model,
       suppressed,
+      lastUserRowId,
     };
     db.prepare(SQL_INSERT_RECAP).run(
       stored.id,
@@ -370,6 +407,7 @@ export default async function plugin(bb: BbPluginApi) {
       stored.turns,
       stored.model,
       stored.suppressed ? 1 : 0,
+      stored.lastUserRowId,
     );
     if (config.autoCleanup) {
       cleanupStoredRecaps();
@@ -468,27 +506,10 @@ export default async function plugin(bb: BbPluginApi) {
     if (!modelInfo)
       throw new Error("No model is available for provider " + providerId + ".");
 
-    const supported = modelInfo.supportedReasoningEfforts.map(
-      (effort) => effort.reasoningEffort,
-    );
-    const reasoningLevel =
-      supported.length > 0 && !supported.includes(preferred.reasoningLevel)
-        ? modelInfo.defaultReasoningEffort
-        : preferred.reasoningLevel;
     const provider = catalog.providers.find(
       (candidate) => candidate.id === providerId,
     );
-    const serviceTier =
-      preferred.serviceTier &&
-      provider?.serviceTiers?.some((tier) => tier.id === preferred.serviceTier)
-        ? preferred.serviceTier
-        : undefined;
-    return {
-      providerId,
-      model: modelInfo.model,
-      reasoningLevel,
-      ...(serviceTier ? { serviceTier } : {}),
-    };
+    return normalizeModelSelection(preferred, modelInfo, provider);
   };
 
   const disposeWorker = async (threadId: string) => {
@@ -560,6 +581,7 @@ export default async function plugin(bb: BbPluginApi) {
     signal?: AbortSignal,
   ): Promise<GenerationResult> => {
     if (signal?.aborted) return result("aborted");
+    if (automatic && !config.auto) return result("automatic_disabled");
     const thread = (await bb.sdk.threads.get({
       threadId,
       signal,
@@ -572,14 +594,16 @@ export default async function plugin(bb: BbPluginApi) {
 
     const rows = await readTimeline(threadId, signal);
     const turns = countUserTurns(rows, threadId);
+    const cursor = latestUserRowId(rows, threadId);
     if (automatic && turns < config.minTurns)
       return result("not_enough_turns", turns);
     const previous = latestUsableRecap(threadId);
-    const input = buildRecapWorkerInput(rows, previous, turns, threadId);
+    const input = buildRecapWorkerInput(rows, previous, threadId);
     if (input.transcript === "") return result("no_conversation", turns);
     if (
       automatic &&
-      (turns <= state.lastAutoTurns || hasRecapForTurns(threadId, turns))
+      ((cursor !== null && cursor === state.lastAutoUserRowId) ||
+        hasRecapForCursor(threadId, cursor))
     ) {
       return { ...result("already_exists", turns), generated: true };
     }
@@ -599,6 +623,7 @@ export default async function plugin(bb: BbPluginApi) {
       return result("stale", turns);
     }
     if (signal?.aborted) return result("aborted", turns);
+    if (automatic && !config.auto) return result("automatic_disabled", turns);
     const raw = await runWorker(beforeWorker, input, execution, signal);
     if (signal?.aborted) return result("aborted", turns);
     const summary = cleanRecapText(raw);
@@ -616,12 +641,12 @@ export default async function plugin(bb: BbPluginApi) {
     ) {
       return result("stale", turns);
     }
-    const latestTurns = countUserTurns(
-      await readTimeline(threadId, signal),
-      threadId,
-    );
-    if (latestTurns !== turns) return result("stale", latestTurns);
-    if (automatic && hasRecapForTurns(threadId, turns)) {
+    const latestRows = await readTimeline(threadId, signal);
+    const latestTurns = countUserTurns(latestRows, threadId);
+    if (signal?.aborted) return result("aborted", latestTurns);
+    if (latestTurns !== turns || latestUserRowId(latestRows, threadId) !== cursor)
+      return result("stale", latestTurns);
+    if (automatic && hasRecapForCursor(threadId, cursor)) {
       return { ...result("already_exists", turns), generated: true };
     }
 
@@ -636,7 +661,9 @@ export default async function plugin(bb: BbPluginApi) {
       turns,
       `${execution.providerId}/${execution.model}`,
       suppressed,
+      cursor,
     );
+    if (automatic) state.lastAutoUserRowId = cursor;
     if (suppressed)
       return {
         recap: null,
@@ -712,7 +739,6 @@ export default async function plugin(bb: BbPluginApi) {
         void beginGeneration(thread.id, true, epoch)
           .then((generation) => {
             if (generation.generated && generation.turns !== null) {
-              state.lastAutoTurns = generation.turns;
               state.autoRetryCount = 0;
             }
             if (
@@ -753,7 +779,6 @@ export default async function plugin(bb: BbPluginApi) {
 
   const rearmAfterManual = async (
     threadId: string,
-    generation: GenerationResult,
     signal?: AbortSignal,
   ) => {
     if (signal?.aborted || disposed) return;
@@ -764,9 +789,6 @@ export default async function plugin(bb: BbPluginApi) {
       })) as ThreadSnapshot;
       if (!isRecapEventTarget(thread, bb.pluginId) || thread.status !== "idle")
         return;
-      const state = stateFor(threadId);
-      if (generation.turns !== null && generation.generated)
-        state.lastAutoTurns = generation.turns;
       scheduleAutomaticRecap(thread);
     } catch {
       // The thread may have been deleted while the manual request completed.
@@ -785,6 +807,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (config.autoCleanup) cleanupStoredRecaps();
       publishChanged({ settings: true });
       for (const state of states.values()) {
+        if (!config.auto) clearTimer(state);
         if (!state.inFlight && state.idleThread)
           scheduleAutomaticRecap(state.idleThread);
       }
@@ -821,28 +844,10 @@ export default async function plugin(bb: BbPluginApi) {
             ".",
         );
 
-      const supported = modelInfo.supportedReasoningEfforts.map(
-        (effort) => effort.reasoningEffort,
-      );
       const provider = catalog.providers.find(
         (candidate) => candidate.id === selection.providerId,
       );
-      const serviceTier =
-        selection.serviceTier &&
-        provider?.serviceTiers?.some(
-          (tier) => tier.id === selection.serviceTier,
-        )
-          ? selection.serviceTier
-          : undefined;
-      const stored: ModelSelection = {
-        providerId: selection.providerId,
-        model: modelInfo.model,
-        reasoningLevel:
-          supported.length > 0 && !supported.includes(selection.reasoningLevel)
-            ? modelInfo.defaultReasoningEffort
-            : selection.reasoningLevel,
-        ...(serviceTier ? { serviceTier } : {}),
-      };
+      const stored = normalizeModelSelection(selection, modelInfo, provider);
       await bb.storage.kv.set(MODEL_SELECTION_KEY, stored);
       modelSelection = stored;
       publishChanged({ settings: true });
@@ -858,7 +863,7 @@ export default async function plugin(bb: BbPluginApi) {
     recap_generate: async ({ threadId, automatic }) => {
       const isAutomatic = automatic === true;
       const generation = await beginGeneration(threadId, isAutomatic);
-      if (!isAutomatic) await rearmAfterManual(threadId, generation);
+      if (!isAutomatic) await rearmAfterManual(threadId);
       if (!isAutomatic && generation.reason === "thread_not_idle") {
         throw new Error(
           "Wait for the thread to become idle before generating a recap.",
@@ -970,7 +975,7 @@ export default async function plugin(bb: BbPluginApi) {
         undefined,
         context.signal,
       );
-      await rearmAfterManual(threadId, generation, context.signal);
+      await rearmAfterManual(threadId, context.signal);
       if (!generation.recap) {
         const message =
           generation.reason === "thread_not_idle"
@@ -996,6 +1001,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (state) {
       state.generationController?.abort();
       state.epoch += 1;
+      state.lastAutoUserRowId = null;
       state.idleThread = undefined;
       clearTimer(state);
       if (!state.inFlight) states.delete(thread.id);

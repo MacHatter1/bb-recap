@@ -6,6 +6,17 @@ All notable changes to Recap are documented here. The format follows
 
 ## Unreleased
 
+### Fixed
+
+- Keep incremental recaps correct when older timeline pages fall outside the bounded history window, and retain context from existing recaps after upgrading.
+- Prevent queued automatic recaps from starting after automatic generation is disabled.
+- Keep generation errors visible after refreshing the Recap panel.
+- Preserve the last usable recap when cleanup removes a suppressed refresh attempt.
+
+### Changed
+
+- Share model-option normalization and typed generation reasons across their consumers.
+
 ## 0.2.2 - 2026-09-25
 
 ### Changed

@@ -3,10 +3,11 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import {
   SQL_CLEANUP_RECAPS,
+  SQL_ADD_RECAP_CURSOR,
   SQL_CREATE_INVALIDATIONS,
   SQL_CREATE_RECAPS,
   SQL_CREATE_RECAPS_INDEX,
-  SQL_HAS_RECAP_FOR_TURNS,
+  SQL_HAS_RECAP_FOR_CURSOR,
   SQL_INSERT_RECAP,
   SQL_LATEST_RECAP,
   SQL_LATEST_RECAP_ANY,
@@ -19,6 +20,7 @@ function openRecapDb() {
   db.exec(SQL_CREATE_RECAPS);
   db.exec(SQL_CREATE_RECAPS_INDEX);
   db.exec(SQL_CREATE_INVALIDATIONS);
+  db.exec(SQL_ADD_RECAP_CURSOR);
   return db;
 }
 
@@ -42,6 +44,7 @@ function insertRecap(
     row.turns,
     "bb/test",
     row.suppressed ?? 0,
+    `user-${row.turns}`,
   );
 }
 
@@ -88,11 +91,11 @@ test("list and latest recaps skip invalidated and suppressed rows", () => {
   );
 
   assert.equal(
-    db.prepare(SQL_HAS_RECAP_FOR_TURNS).get("t1", 4) !== undefined,
+    db.prepare(SQL_HAS_RECAP_FOR_CURSOR).get("t1", "user-4") !== undefined,
     true,
   );
   assert.equal(
-    db.prepare(SQL_HAS_RECAP_FOR_TURNS).get("t2", 2) === undefined,
+    db.prepare(SQL_HAS_RECAP_FOR_CURSOR).get("t2", "user-2") === undefined,
     true,
   );
   const hiddenContext = db.prepare(SQL_LATEST_RECAP_ANY).get("t2") as {
@@ -167,4 +170,19 @@ test("cleanup deletes suppressed and extra visible rows but keeps the newest rec
   assert.equal(context.summary, "gone");
   assert.equal(context.turns, 5);
   db.close();
+});
+
+test("a suppressed refresh cannot delete the latest usable invalidated recap", () => {
+  const db = openRecapDb();
+  try {
+    insertRecap(db, { id: "successful", threadId: "t1", summary: "Earlier decisions", generatedAt: 100, turns: 3 });
+    db.prepare(SQL_UPSERT_INVALIDATION).run("t1", 200);
+    insertRecap(db, { id: "suppressed", threadId: "t1", summary: "", generatedAt: 300, turns: 4, suppressed: 1 });
+    db.prepare(SQL_CLEANUP_RECAPS).run(1000);
+    assert.deepEqual(db.prepare("SELECT id FROM recaps").all(), [{ id: "successful" }]);
+    assert.equal(db.prepare(SQL_LATEST_RECAP).get("t1"), undefined);
+    assert.equal((db.prepare(SQL_LATEST_RECAP_ANY).get("t1") as { summary: string }).summary, "Earlier decisions");
+  } finally {
+    db.close();
+  }
 });
