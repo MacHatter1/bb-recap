@@ -249,6 +249,11 @@ test("bounds settings without accepting invalid values", () => {
     RECAP_DISPLAY_MODES.card,
   );
   assert.equal(parseDisplayMode("compact"), RECAP_DISPLAY_MODES.compact);
+  assert.equal(
+    parseDisplayMode(RECAP_DISPLAY_MODES.expanded),
+    RECAP_DISPLAY_MODES.expanded,
+  );
+  assert.equal(parseDisplayMode("expanded"), RECAP_DISPLAY_MODES.expanded);
   assert.equal(parseDisplayMode("unknown"), RECAP_DISPLAY_MODES.compact);
   assert.equal(clampConcurrentGenerations(3), 3);
   assert.equal(clampConcurrentGenerations(0), 2);

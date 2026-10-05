@@ -218,12 +218,14 @@ function RecapComposerBannerContent({
   mode: RecapDisplayMode;
 }) {
   const { recap, generating, loading, error, generate } = useThreadRecap(threadId);
-  const compact = mode === RECAP_DISPLAY_MODES.compact;
-  const [expanded, setExpanded] = useState(false);
+  // Expanded banner is the compact banner that opens expanded; it still collapses.
+  const openByDefault = mode === RECAP_DISPLAY_MODES.expanded;
+  const compact = mode === RECAP_DISPLAY_MODES.compact || openByDefault;
+  const [expanded, setExpanded] = useState(openByDefault);
 
   useEffect(() => {
-    setExpanded(false);
-  }, [mode, recap?.id, recap?.summary, threadId]);
+    setExpanded(openByDefault);
+  }, [openByDefault, recap?.id, recap?.summary, threadId]);
 
   if (!recap) {
     if (!generating) return null;
@@ -430,6 +432,22 @@ function DisplayModePreview({
               </div>
             </div>
             <div className="h-2 w-4/5 rounded-full bg-muted" />
+          </div>
+        ) : mode === RECAP_DISPLAY_MODES.expanded ? (
+          <div className="space-y-2 rounded-lg border border-border bg-surface-recessed/20 p-2">
+            <div className="flex items-center gap-2">
+              <div className="h-5 w-5 shrink-0 rounded-md bg-muted" />
+              <div className="h-1.5 w-16 rounded-full bg-muted" />
+              <div className="ml-auto flex shrink-0 gap-1">
+                <div className="h-5 w-10 rounded border border-border bg-muted" />
+                <div className="h-5 w-8 rounded bg-muted" />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <div className="h-2 w-full rounded-full bg-muted" />
+              <div className="h-2 w-full rounded-full bg-muted" />
+              <div className="h-2 w-3/5 rounded-full bg-muted" />
+            </div>
           </div>
         ) : mode === RECAP_DISPLAY_MODES.card ? (
           <div className="space-y-3 rounded-xl border border-border border-l-2 border-l-muted bg-card p-3">
@@ -804,7 +822,7 @@ function SettingsSectionBody() {
               Click a preview to apply that layout now. Other settings still need Save.
             </p>
           </div>
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             {RECAP_DISPLAY_MODE_OPTIONS.map((mode) => (
               <DisplayModePreview
                 key={mode}

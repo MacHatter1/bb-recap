@@ -6,6 +6,10 @@ All notable changes to Recap are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- Add an Expanded banner display mode: the compact banner opens expanded and can still be collapsed.
+
 ### Fixed
 
 - Move Refresh and Expand/Collapse into the compact banner's header line, so the recap text spans the full banner width below it. On phones Refresh is a ↻ icon that spins while busy, and Expand/Collapse shows only its arrow.
