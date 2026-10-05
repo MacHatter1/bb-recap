@@ -242,18 +242,44 @@ function RecapComposerBannerContent({
   }
 
   if (compact) {
-    const compactSummary = (
-      <>
-        <span aria-hidden="true" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent text-sm text-foreground">
-          ✦
-        </span>
-        <div aria-live="polite" className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="shrink-0 text-xs font-semibold text-foreground">Recap</span>
-            <span className="truncate text-[11px] text-muted-foreground">
-              {recap.automatic ? "Automatic" : "Manual"} · {new Date(recap.generatedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
-            </span>
+    const toggle = () => setExpanded((current) => !current);
+    const toggleLabel = expanded ? "Collapse recap" : "Expand recap";
+    return (
+      <div
+        className="mx-auto mb-2 w-full min-w-0 max-w-3xl rounded-lg border border-border bg-surface-recessed/20 px-3 py-2 shadow-sm"
+        role="region"
+        aria-label="Latest recap"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <span aria-hidden="true" className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent text-xs text-foreground">
+            ✦
+          </span>
+          <span className="shrink-0 text-xs font-semibold text-foreground">Recap</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+            {recap.automatic ? "Automatic" : "Manual"} · {new Date(recap.generatedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            <RefreshButton loading={loading} generating={generating} onClick={() => void generate()} />
+            <button
+              type="button"
+              className="inline-flex min-h-8 items-center gap-1 rounded-md border border-transparent px-2 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              aria-label={toggleLabel}
+              aria-expanded={expanded}
+              onClick={toggle}
+            >
+              <span className="hidden sm:inline">{expanded ? "Collapse" : "Expand"}</span>
+              <span aria-hidden="true" className="text-sm leading-none">{expanded ? "↓" : "↑"}</span>
+            </button>
           </div>
+        </div>
+        <button
+          type="button"
+          aria-live="polite"
+          className="mt-1 block w-full min-w-0 cursor-pointer rounded-md px-1 py-0.5 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          aria-label={toggleLabel}
+          aria-expanded={expanded}
+          onClick={toggle}
+        >
           <p className={expanded ? "text-sm leading-5 text-foreground" : "truncate text-sm leading-5 text-foreground"} title={recap.summary}>
             {recap.summary}
           </p>
@@ -262,38 +288,8 @@ function RecapComposerBannerContent({
               {recap.model} · {new Date(recap.generatedAt).toLocaleString()}
             </p>
           ) : null}
-          {error ? <p role="alert" className="mt-1 text-xs text-destructive">{error}</p> : null}
-        </div>
-        <span className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded-md border border-transparent px-2 text-xs font-medium text-muted-foreground transition-colors group-hover:border-border group-hover:bg-background group-hover:text-foreground">
-          <span className="hidden sm:inline">{expanded ? "Collapse" : "Expand"}</span>
-          <span aria-hidden="true" className="text-sm leading-none">{expanded ? "↓" : "↑"}</span>
-        </span>
-      </>
-    );
-
-    return (
-      <div
-        className={`mx-auto mb-2 flex w-full min-w-0 max-w-3xl gap-2 rounded-lg border border-border bg-surface-recessed/20 px-3 py-2.5 shadow-sm ${expanded ? "flex-col items-stretch sm:flex-row sm:items-center" : "items-center"}`}
-        role="region"
-        aria-label="Latest recap"
-      >
-        <button
-          type="button"
-          className="group flex min-w-0 flex-1 cursor-pointer items-start gap-3 rounded-lg p-1 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          aria-label={expanded ? "Collapse recap" : "Expand recap"}
-          aria-expanded={expanded}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          {compactSummary}
         </button>
-        <button
-          type="button"
-          className={`inline-flex min-h-8 shrink-0 items-center justify-center rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 ${expanded ? "self-end sm:self-auto" : ""}`}
-          onClick={() => void generate()}
-          disabled={loading || generating}
-        >
-          {loading ? "Loading…" : generating ? "Generating…" : "Refresh"}
-        </button>
+        {error ? <p role="alert" className="mt-1 px-1 text-xs text-destructive">{error}</p> : null}
       </div>
     );
   }
@@ -330,18 +326,48 @@ function RecapComposerBannerContent({
         <p className="min-w-0 truncate text-xs text-muted-foreground" title={recap.model}>
           Generated with {recap.model}
         </p>
-        <button
-          type="button"
-          className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-          onClick={() => void generate()}
-          disabled={loading || generating}
-        >
-          {loading ? "Loading…" : generating ? "Generating…" : "Refresh"}
-        </button>
+        <RefreshButton loading={loading} generating={generating} onClick={() => void generate()} />
       </div>
     </div>
   );
 }
+const REFRESH_LABELS = ["Refresh", "Loading…", "Generating…"] as const;
+
+/**
+ * Below the sm breakpoint the button is a ↻ icon that spins while busy. From
+ * sm up every label shares one grid cell and only the current one is visible,
+ * so the button keeps the longest label's width and the recap text beside it
+ * does not reflow when a background refresh briefly shows "Loading…".
+ */
+function RefreshButton({ loading, generating, onClick }: { loading: boolean; generating: boolean; onClick: () => void }) {
+  const busy = loading || generating;
+  const current = loading ? "Loading…" : generating ? "Generating…" : "Refresh";
+  return (
+    <button
+      type="button"
+      className="inline-flex min-h-8 min-w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 sm:px-2.5"
+      aria-label={current}
+      title={current}
+      onClick={onClick}
+      disabled={busy}
+    >
+      <span aria-hidden="true" className={busy ? "animate-spin text-sm leading-none sm:hidden" : "text-sm leading-none sm:hidden"}>
+        ↻
+      </span>
+      <span aria-hidden="true" className="hidden sm:grid">
+        {REFRESH_LABELS.map((label) => (
+          <span
+            key={label}
+            className={label === current ? "col-start-1 row-start-1 text-center" : "invisible col-start-1 row-start-1 text-center"}
+          >
+            {label}
+          </span>
+        ))}
+      </span>
+    </button>
+  );
+}
+
 function RecapComposerBanner() {
   const { scope } = useComposerView();
   const { settings, isLoading } = useRecapSettings();
@@ -394,16 +420,16 @@ function DisplayModePreview({
       </div>
       <div className="mt-3 rounded-md bg-background p-2" aria-hidden="true">
         {mode === RECAP_DISPLAY_MODES.compact ? (
-          <div className="flex min-h-12 items-center gap-2 rounded-lg border border-border bg-surface-recessed/20 px-2">
-            <div className="h-6 w-6 shrink-0 rounded-md bg-muted" />
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <div className="h-1.5 w-12 rounded-full bg-muted" />
-              <div className="h-2 w-4/5 rounded-full bg-muted" />
+          <div className="space-y-2 rounded-lg border border-border bg-surface-recessed/20 p-2">
+            <div className="flex items-center gap-2">
+              <div className="h-5 w-5 shrink-0 rounded-md bg-muted" />
+              <div className="h-1.5 w-16 rounded-full bg-muted" />
+              <div className="ml-auto flex shrink-0 gap-1">
+                <div className="h-5 w-10 rounded border border-border bg-muted" />
+                <div className="h-5 w-8 rounded bg-muted" />
+              </div>
             </div>
-            <div className="flex shrink-0 gap-1">
-              <div className="h-6 w-12 rounded border border-border bg-muted" />
-              <div className="h-6 w-14 rounded border border-border bg-muted" />
-            </div>
+            <div className="h-2 w-4/5 rounded-full bg-muted" />
           </div>
         ) : mode === RECAP_DISPLAY_MODES.card ? (
           <div className="space-y-3 rounded-xl border border-border border-l-2 border-l-muted bg-card p-3">
