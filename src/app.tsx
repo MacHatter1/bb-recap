@@ -265,7 +265,7 @@ function RecapComposerBannerContent({
           {error ? <p role="alert" className="mt-1 text-xs text-destructive">{error}</p> : null}
         </div>
         <span className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded-md border border-transparent px-2 text-xs font-medium text-muted-foreground transition-colors group-hover:border-border group-hover:bg-background group-hover:text-foreground">
-          {expanded ? "Collapse" : "Expand"}
+          <span className="hidden sm:inline">{expanded ? "Collapse" : "Expand"}</span>
           <span aria-hidden="true" className="text-sm leading-none">{expanded ? "↓" : "↑"}</span>
         </span>
       </>
@@ -273,7 +273,7 @@ function RecapComposerBannerContent({
 
     return (
       <div
-        className="mx-auto mb-2 flex w-full min-w-0 max-w-3xl items-center gap-2 rounded-lg border border-border bg-surface-recessed/20 px-3 py-2.5 shadow-sm"
+        className={`mx-auto mb-2 flex w-full min-w-0 max-w-3xl gap-2 rounded-lg border border-border bg-surface-recessed/20 px-3 py-2.5 shadow-sm ${expanded ? "flex-col items-stretch sm:flex-row sm:items-center" : "items-center"}`}
         role="region"
         aria-label="Latest recap"
       >
@@ -288,7 +288,7 @@ function RecapComposerBannerContent({
         </button>
         <button
           type="button"
-          className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+          className={`inline-flex min-h-8 shrink-0 items-center justify-center rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 ${expanded ? "self-end sm:self-auto" : ""}`}
           onClick={() => void generate()}
           disabled={loading || generating}
         >
