@@ -14,6 +14,8 @@ import {
   MAX_TRANSCRIPT_CHARS,
   parsePositiveInteger,
   createGenerationLimiter,
+  GENERATION_REASONS,
+  isRunningThreadStatus,
   isVisibleThread,
   MAX_CONCURRENT_GENERATIONS,
   MIN_CONCURRENT_GENERATIONS,
@@ -176,6 +178,8 @@ type ThreadSnapshot = {
   status: string;
   visibility: "visible" | "hidden";
   originPluginId: string | null;
+  originKind?: "fork" | null;
+  parentThreadId?: string | null;
 };
 
 type ThreadState = {
@@ -185,6 +189,7 @@ type ThreadState = {
   lastAutoUserRowId: string | null;
   idleThread?: ThreadSnapshot;
   autoRetryCount: number;
+  scheduleGeneration: number;
   generationController?: AbortController;
   generationPromise?: Promise<GenerationResult>;
   retired?: boolean;
@@ -328,6 +333,7 @@ export default async function plugin(bb: BbPluginApi) {
       inFlight: false,
       lastAutoUserRowId: null,
       autoRetryCount: 0,
+      scheduleGeneration: 0,
     };
     states.set(threadId, created);
     return created;
@@ -338,6 +344,94 @@ export default async function plugin(bb: BbPluginApi) {
       clearTimeout(state.timer);
       state.timer = undefined;
     }
+  };
+
+  const CHILD_LIST_PAGE_SIZE = 100;
+  const MAX_CHILD_LIST_PAGES = 20;
+  const MAX_ANCESTOR_DEPTH = 8;
+
+  // Spawned children keep working after the parent turn goes idle. Forks are a
+  // separate conversation, and this plugin's own workers are not user work.
+  const hasRunningChildThreads = async (
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> => {
+    const seen = new Set<string>([threadId]);
+    const visit = async (id: string, depth: number): Promise<boolean> => {
+      if (signal?.aborted || depth > MAX_ANCESTOR_DEPTH) return false;
+      let offset = 0;
+      for (let page = 0; page < MAX_CHILD_LIST_PAGES; page += 1) {
+        let children;
+        try {
+          children = await bb.sdk.threads.list({
+            parentThreadId: id,
+            includeHidden: true,
+            archived: false,
+            limit: CHILD_LIST_PAGE_SIZE,
+            offset,
+            signal,
+          });
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          logWarning(
+            `Could not list child threads for ${id}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return false;
+        }
+        for (const child of children) {
+          if (seen.has(child.id)) continue;
+          seen.add(child.id);
+          if (child.originKind === "fork" || child.originPluginId === bb.pluginId)
+            continue;
+          if (child.archivedAt != null || child.deletedAt != null) continue;
+          if (isRunningThreadStatus(child.status)) return true;
+          if (await visit(child.id, depth + 1)) return true;
+        }
+        if (children.length < CHILD_LIST_PAGE_SIZE) return false;
+        offset += children.length;
+      }
+      return false;
+    };
+    return visit(threadId, 0);
+  };
+
+  const eachAncestor = async (
+    thread: ThreadSnapshot,
+    visit: (state: ThreadState) => void,
+  ) => {
+    if (
+      !thread.parentThreadId ||
+      thread.originKind === "fork" ||
+      thread.originPluginId === bb.pluginId
+    )
+      return;
+    let parentId: string | null = thread.parentThreadId;
+    const seen = new Set<string>();
+    while (parentId && !seen.has(parentId) && seen.size < MAX_ANCESTOR_DEPTH) {
+      if (disposed) return;
+      seen.add(parentId);
+      const state = states.get(parentId);
+      if (state && !state.retired) visit(state);
+      try {
+        const parent = (await bb.sdk.threads.get({
+          threadId: parentId,
+        })) as ThreadSnapshot;
+        parentId = parent.parentThreadId ?? null;
+      } catch {
+        return;
+      }
+    }
+  };
+
+  const holdAncestorsForRunningChild = (thread: ThreadSnapshot) => {
+    if (!isRunningThreadStatus(thread.status)) return;
+    void eachAncestor(thread, (state) => {
+      state.scheduleGeneration += 1;
+      clearTimer(state);
+      if (!state.inFlight) return;
+      state.generationController?.abort();
+      state.epoch += 1;
+    });
   };
 
   const latestRecap = (threadId: string): Recap | null => {
@@ -588,7 +682,8 @@ export default async function plugin(bb: BbPluginApi) {
     })) as ThreadSnapshot;
     if (!isVisibleThread(thread.visibility)) return result("hidden_thread");
     const state = stateFor(threadId);
-    if (thread.status !== "idle") return result("thread_not_idle");
+    if (thread.status !== "idle" || (await hasRunningChildThreads(threadId, signal)))
+      return result("thread_not_idle");
     if (expectedEpoch !== undefined && state.epoch !== expectedEpoch)
       return result("stale");
 
@@ -618,7 +713,8 @@ export default async function plugin(bb: BbPluginApi) {
       return result("hidden_thread", turns);
     if (
       beforeWorker.status !== "idle" ||
-      (expectedEpoch !== undefined && state.epoch !== expectedEpoch)
+      (expectedEpoch !== undefined && state.epoch !== expectedEpoch) ||
+      (await hasRunningChildThreads(threadId, signal))
     ) {
       return result("stale", turns);
     }
@@ -637,7 +733,8 @@ export default async function plugin(bb: BbPluginApi) {
       return result("hidden_thread", turns);
     if (
       current.status !== "idle" ||
-      (expectedEpoch !== undefined && state.epoch !== expectedEpoch)
+      (expectedEpoch !== undefined && state.epoch !== expectedEpoch) ||
+      (await hasRunningChildThreads(threadId, signal))
     ) {
       return result("stale", turns);
     }
@@ -730,51 +827,90 @@ export default async function plugin(bb: BbPluginApi) {
     clearTimer(state);
     state.idleThread = thread;
     if (!retry) state.autoRetryCount = 0;
+    state.scheduleGeneration += 1;
     if (!config.auto || thread.status !== "idle") return;
+    const token = state.scheduleGeneration;
     const epoch = state.epoch;
-    state.timer = setTimeout(
-      () => {
-        state.timer = undefined;
-        if (disposed) return;
+    void (async () => {
+      let childrenRunning = false;
+      try {
+        childrenRunning = await hasRunningChildThreads(thread.id);
+      } catch (error) {
+        logWarning(
+          `Could not check child threads for ${thread.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      const current = states.get(thread.id);
+      if (
+        disposed ||
+        !current ||
+        current.retired ||
+        current.scheduleGeneration !== token ||
+        current.epoch !== epoch ||
+        !current.idleThread ||
+        !config.auto ||
+        childrenRunning
+      )
+        return;
+      current.timer = setTimeout(() => {
+        current.timer = undefined;
+        if (
+          disposed ||
+          current.scheduleGeneration !== token ||
+          current.epoch !== epoch
+        )
+          return;
         void beginGeneration(thread.id, true, epoch)
           .then((generation) => {
+            const latest = states.get(thread.id);
+            if (!latest || latest.epoch !== epoch) return;
             if (generation.generated && generation.turns !== null) {
-              state.autoRetryCount = 0;
+              latest.autoRetryCount = 0;
+            }
+            if (generation.reason === "thread_not_idle" && latest.idleThread) {
+              scheduleAutomaticRecap(latest.idleThread);
+              return;
             }
             if (
-              state.epoch === epoch &&
-              state.idleThread &&
+              latest.idleThread &&
               shouldRetryAutomaticRecap({
                 generated: generation.generated,
                 reason: generation.reason,
-                retryCount: state.autoRetryCount,
+                retryCount: latest.autoRetryCount,
               })
             ) {
-              state.autoRetryCount += 1;
-              scheduleAutomaticRecap(state.idleThread, RETRY_AFTER_MS, true);
+              latest.autoRetryCount += 1;
+              scheduleAutomaticRecap(latest.idleThread, RETRY_AFTER_MS, true);
             }
           })
           .catch((error: unknown) => {
             logWarning(
               `Automatic recap failed: ${error instanceof Error ? error.message : String(error)}`,
             );
+            const latest = states.get(thread.id);
             if (
               !disposed &&
-              state.epoch === epoch &&
-              state.idleThread &&
+              latest &&
+              latest.epoch === epoch &&
+              latest.idleThread &&
               shouldRetryAutomaticRecap({
                 generated: false,
                 reason: null,
-                retryCount: state.autoRetryCount,
+                retryCount: latest.autoRetryCount,
               })
             ) {
-              state.autoRetryCount += 1;
-              scheduleAutomaticRecap(state.idleThread, RETRY_AFTER_MS, true);
+              latest.autoRetryCount += 1;
+              scheduleAutomaticRecap(latest.idleThread, RETRY_AFTER_MS, true);
             }
           });
-      },
-      Math.max(0, delay),
-    );
+      }, Math.max(0, delay));
+    })();
+  };
+
+  const reconsiderAncestors = (thread: ThreadSnapshot) => {
+    void eachAncestor(thread, (state) => {
+      if (state.idleThread) scheduleAutomaticRecap(state.idleThread);
+    });
   };
 
   const rearmAfterManual = async (
@@ -865,9 +1001,7 @@ export default async function plugin(bb: BbPluginApi) {
       const generation = await beginGeneration(threadId, isAutomatic);
       if (!isAutomatic) await rearmAfterManual(threadId);
       if (!isAutomatic && generation.reason === "thread_not_idle") {
-        throw new Error(
-          "Wait for the thread to become idle before generating a recap.",
-        );
+        throw new Error(GENERATION_REASONS.thread_not_idle);
       }
       return {
         recap: generation.recap,
@@ -979,7 +1113,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (!generation.recap) {
         const message =
           generation.reason === "thread_not_idle"
-            ? "Wait for the thread to become idle before generating a recap."
+            ? GENERATION_REASONS.thread_not_idle
             : generation.reason === "hidden_thread"
               ? "Recaps cannot be generated for hidden threads."
               : `Could not generate a recap (${generation.reason ?? "unknown error"}).`;
@@ -994,11 +1128,17 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  bb.events.on("thread.created", ({ thread }) => {
+    holdAncestorsForRunningChild(thread);
+  });
+
   bb.events.on("thread.active", ({ thread }) => {
+    holdAncestorsForRunningChild(thread);
     if (!isRecapEventTarget(thread, bb.pluginId)) return;
     invalidateRecap(thread.id);
     const state = states.get(thread.id);
     if (state) {
+      state.scheduleGeneration += 1;
       state.generationController?.abort();
       state.epoch += 1;
       state.lastAutoUserRowId = null;
@@ -1009,27 +1149,34 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.events.on("thread.idle", ({ thread }) => {
+    reconsiderAncestors(thread);
     if (!isRecapEventTarget(thread, bb.pluginId)) return;
     scheduleAutomaticRecap(thread);
   });
 
   bb.events.on("thread.failed", ({ thread }) => {
     const state = states.get(thread.id);
-    if (!state) return;
-    state.generationController?.abort();
-    state.epoch += 1;
-    state.idleThread = undefined;
-    clearTimer(state);
+    if (state) {
+      state.scheduleGeneration += 1;
+      state.generationController?.abort();
+      state.epoch += 1;
+      state.idleThread = undefined;
+      clearTimer(state);
+    }
+    reconsiderAncestors(thread);
   });
 
   const removeThreadState = ({ thread }: { thread: ThreadSnapshot }) => {
     const state = states.get(thread.id);
-    if (!state) return;
-    state.retired = true;
-    state.generationController?.abort();
-    clearTimer(state);
-    state.idleThread = undefined;
-    if (!state.inFlight) states.delete(thread.id);
+    if (state) {
+      state.retired = true;
+      state.scheduleGeneration += 1;
+      state.generationController?.abort();
+      clearTimer(state);
+      state.idleThread = undefined;
+      if (!state.inFlight) states.delete(thread.id);
+    }
+    reconsiderAncestors(thread);
   };
   bb.events.on("thread.archived", removeThreadState);
   bb.events.on("thread.deleted", removeThreadState);

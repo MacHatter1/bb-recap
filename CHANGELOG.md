@@ -6,6 +6,10 @@ All notable changes to Recap are documented here. The format follows
 
 ## Unreleased
 
+### Fixed
+
+- Treat a thread as still active while a child thread is starting, active, or stopping, so recaps wait until that work finishes.
+
 ## 0.2.3 - 2026-10-01
 
 ### Fixed
