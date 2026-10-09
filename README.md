@@ -51,7 +51,7 @@ Generate from the thread header, command palette, or CLI for a visible, idle thr
 
 ### ⏱️ Refresh automatically
 
-Recap can run after a visible thread goes idle and reaches the minimum user-turn count. It does not scan idle threads when the plugin starts.
+Recap can run after a visible thread goes idle and reaches the minimum user-turn count. A thread with a child thread still running stays active. It does not scan idle threads when the plugin starts.
 
 </td>
 </tr>
@@ -137,7 +137,7 @@ flowchart TD
 - **Bounded input.** Recap reads up to 120,000 transcript characters and limits generated text to 1,200 characters.
 - **Incremental refresh.** When a thread has new turns, Recap locates the saved user-row ID and sends the earlier summary plus the new turns. If that row is outside the bounded history window, or the recap predates cursor tracking, it combines the earlier summary with the available transcript. The worker is archived and stopped after each attempt.
 - **Separate storage.** Recaps live in Recap's namespaced SQLite database. A new thread turn hides the earlier recap until a fresh one is generated.
-- **Automatic runs.** Recap listens for visible threads going idle, waits for the configured delay and turn minimum, and retries transient failures up to three times.
+- **Automatic runs.** Recap listens for visible threads going idle, waits for the configured delay and turn minimum, and retries transient failures up to three times. Child threads that are still running keep the parent active.
 
 ## Safe by default
 
@@ -164,7 +164,7 @@ bb recap list                  # List recent recaps
 | `bb recap show [thread-id] [--json]` | Show the latest valid recap. |
 | `bb recap list [--limit N] [--json]` | List recaps; the default limit is 50 and the maximum is 100. |
 
-Leave out `thread-id` in a thread-aware BB CLI context. Generation requires a visible, idle thread; hidden worker threads are not eligible. Add `--json` to any command for JSON output.
+Leave out `thread-id` in a thread-aware BB CLI context. Generation requires a visible, idle thread. A thread with a child thread still running is still active. Hidden worker threads are not eligible. Add `--json` to any command for JSON output.
 
 The bundled [agent skill](skills/bb-recap/SKILL.md) explains when and how to use these commands.
 
