@@ -29,6 +29,10 @@ export function parseDisplayMode(raw: string): RecapDisplayMode {
   return RECAP_DISPLAY_MODES.compact;
 }
 
+export function bannerStartsExpanded(mode: RecapDisplayMode): boolean {
+  return mode === RECAP_DISPLAY_MODES.expanded;
+}
+
 export function shouldShowRecapBanner(
   scopeKind: string,
   isInlineMessageEditor: boolean,

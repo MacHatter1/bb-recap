@@ -24,7 +24,9 @@ async function createHarness(options: {
   let handlers!: {
     recap_generate: (input: { threadId: string; automatic: boolean }) => Promise<{ recap: Recap | null; reason: string | null }>;
     recap_get: (input: { threadId: string }) => Promise<{ generating: boolean }>;
+    recap_settings_get: () => Promise<RecapSettings>;
     recap_settings_set: (input: RecapSettings) => Promise<RecapSettings>;
+    recap_display_mode_set: (input: { displayMode: RecapSettings["displayMode"] }) => Promise<{ displayMode: RecapSettings["displayMode"] }>;
   };
   const thread = (id: string) => ({ id, projectId: "p", environmentId: null, providerId: "p", status: "idle", visibility: "visible", originPluginId: null });
   const bb = {
@@ -55,6 +57,17 @@ async function createHarness(options: {
   await plugin(bb);
   return { db, settings, handlers, spawned, activate: (id: string) => events.get("thread.active")?.({ thread: { ...thread(id), status: "running" } }), close: async () => { await dispose(); db.close(); } };
 }
+
+test("saves Expanded banner and reads it back", async () => {
+  const harness = await createHarness();
+  try {
+    const saved = await harness.handlers.recap_display_mode_set({ displayMode: "Expanded banner" });
+    assert.equal(saved.displayMode, "Expanded banner");
+    assert.equal((await harness.handlers.recap_settings_get()).displayMode, "Expanded banner");
+  } finally {
+    await harness.close();
+  }
+});
 
 test("disabling automatic recaps prevents queued requests from spawning", async () => {
   const started = deferred();

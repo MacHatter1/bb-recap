@@ -12,8 +12,8 @@ All notable changes to Recap are documented here. The format follows
 
 ### Fixed
 
-- Move Refresh and Expand/Collapse into the compact banner's header line, so the recap text spans the full banner width below it. On phones Refresh is a ↻ icon that spins while busy, and Expand/Collapse shows only its arrow.
-- Keep the Refresh button at a fixed width, so the recap text beside it no longer reflows while it briefly reads "Loading…" or "Generating…".
+- Move Refresh and Expand/Collapse into the compact banner's header line, so the recap text spans the full banner width below it. On phones that header's Refresh is a ↻ icon that spins while busy, and Expand/Collapse shows only its arrow. The Recap card keeps a text Refresh label.
+- Keep the Refresh label at a fixed width, so the "Automatic · time" line beside it does not reflow while the button briefly reads "Loading…" or "Generating…".
 
 ## 0.2.3 - 2026-10-01
 

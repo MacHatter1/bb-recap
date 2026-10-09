@@ -20,6 +20,7 @@ import {
   MAX_CONCURRENT_GENERATIONS,
   MAX_RECAP_PROMPT_CHARS,
   MIN_CONCURRENT_GENERATIONS,
+  bannerStartsExpanded,
   normalizeRecapSettings,
   parseClampedInteger,
   RECAP_DISPLAY_MODE_OPTIONS,
@@ -98,22 +99,52 @@ function useRecapSettings() {
 function useThreadRecap(threadId: string) {
   const rpc = useRpc<typeof rpcContract>();
   const [recap, setRecap] = useState<Recap | null>(null);
+  const [recapThreadId, setRecapThreadId] = useState(threadId);
   const [generating, setGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [readError, setReadError] = useState<string | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const threadEpoch = useRef(0);
+  const epochThreadId = useRef(threadId);
+  const reloadSeq = useRef(0);
+  const ownedThreadId = useRef(threadId);
+  if (epochThreadId.current !== threadId) {
+    epochThreadId.current = threadId;
+    threadEpoch.current += 1;
+  }
+
+  const applyRecap = (requestedThreadId: string, next: Recap | null) => {
+    setRecap(next);
+    setRecapThreadId(requestedThreadId);
+    ownedThreadId.current = requestedThreadId;
+  };
+
+  const noteThreadFailure = (requestedThreadId: string) => {
+    if (ownedThreadId.current !== requestedThreadId) {
+      setRecap(null);
+      ownedThreadId.current = requestedThreadId;
+    }
+    setRecapThreadId(requestedThreadId);
+    setGenerating(false);
+  };
 
   const reload = useCallback(async () => {
+    const epoch = threadEpoch.current;
+    const seq = ++reloadSeq.current;
+    const requestedThreadId = threadId;
     setLoading(true);
     try {
-      const next = await rpc.call("recap_get", { threadId });
-      setRecap(next.recap);
+      const next = await rpc.call("recap_get", { threadId: requestedThreadId });
+      if (epoch !== threadEpoch.current || seq !== reloadSeq.current) return;
+      applyRecap(requestedThreadId, next.recap);
       setGenerating(next.generating);
       setReadError(null);
     } catch (cause) {
+      if (epoch !== threadEpoch.current || seq !== reloadSeq.current) return;
+      noteThreadFailure(requestedThreadId);
       setReadError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setLoading(false);
+      if (epoch === threadEpoch.current && seq === reloadSeq.current) setLoading(false);
     }
   }, [rpc, threadId]);
 
@@ -129,21 +160,40 @@ function useThreadRecap(threadId: string) {
   useEffect(() => { setGenerationError(null); }, [threadId]);
 
   const generate = useCallback(async () => {
+    const epoch = threadEpoch.current;
+    const requestedThreadId = threadId;
     setGenerating(true);
     setGenerationError(null);
     try {
-      const next = await rpc.call("recap_generate", { threadId, automatic: false });
-      setRecap(next.recap);
-      if (!next.recap) setGenerationError(generationErrorMessage(next.reason));
+      const next = await rpc.call("recap_generate", { threadId: requestedThreadId, automatic: false });
+      if (epoch !== threadEpoch.current) return;
+      if (next.recap) {
+        applyRecap(requestedThreadId, next.recap);
+      } else {
+        // The server leaves the previous visible row in place and returns a null recap with a reason.
+        noteThreadFailure(requestedThreadId);
+        setGenerationError(generationErrorMessage(next.reason));
+      }
     } catch (cause) {
+      if (epoch !== threadEpoch.current) return;
+      noteThreadFailure(requestedThreadId);
       setGenerationError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setGenerating(false);
-      void reload();
+      if (epoch === threadEpoch.current) {
+        setGenerating(false);
+        void reload();
+      }
     }
   }, [reload, rpc, threadId]);
 
-  return { recap, generating, loading, error: generationError ?? readError, generate };
+  const currentThread = recapThreadId === threadId;
+  return {
+    recap: currentThread ? recap : null,
+    generating: currentThread ? generating : false,
+    loading: currentThread ? loading : true,
+    error: currentThread ? (generationError ?? readError) : null,
+    generate,
+  };
 }
 
 function RecapPanel({ threadId, params }: PluginThreadPanelProps) {
@@ -201,7 +251,7 @@ function RecapPanel({ threadId, params }: PluginThreadPanelProps) {
             {recap.automatic ? "Automatic" : "Manual"} · {recap.model} · {new Date(recap.generatedAt).toLocaleString()}
           </p>
         </div>
-      ) : (
+      ) : loading || generating || error ? null : (
         <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
           No recap has been generated for this thread yet.
         </div>
@@ -218,17 +268,29 @@ function RecapComposerBannerContent({
   mode: RecapDisplayMode;
 }) {
   const { recap, generating, loading, error, generate } = useThreadRecap(threadId);
-  // Expanded banner is the compact banner that opens expanded; it still collapses.
-  const openByDefault = mode === RECAP_DISPLAY_MODES.expanded;
-  const compact = mode === RECAP_DISPLAY_MODES.compact || openByDefault;
-  const [expanded, setExpanded] = useState(openByDefault);
+  const opensExpanded = bannerStartsExpanded(mode);
+  const compact = mode === RECAP_DISPLAY_MODES.compact || opensExpanded;
+  const [expanded, setExpanded] = useState(opensExpanded);
 
   useEffect(() => {
-    setExpanded(openByDefault);
-  }, [openByDefault, recap?.id, recap?.summary, threadId]);
+    setExpanded(bannerStartsExpanded(mode));
+  }, [mode, recap?.id, threadId]);
 
   if (!recap) {
-    if (!generating) return null;
+    if (!generating) {
+      if (!error) return null;
+      return (
+        <div
+          className={compact
+            ? "mx-auto mb-2 w-full min-w-0 max-w-3xl rounded-lg border border-border bg-surface-recessed/20 px-3 py-2.5 shadow-sm"
+            : "mx-auto mb-3 w-full min-w-0 max-w-3xl rounded-xl border border-border border-l-2 border-l-foreground bg-card p-4 shadow-sm sm:p-5"}
+          role="region"
+          aria-label="Latest recap"
+        >
+          <p role="alert" className="text-sm text-destructive">{error}</p>
+        </div>
+      );
+    }
     return (
       <div
         className={compact
@@ -261,7 +323,7 @@ function RecapComposerBannerContent({
             {recap.automatic ? "Automatic" : "Manual"} · {new Date(recap.generatedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
           </span>
           <div className="flex shrink-0 items-center gap-1">
-            <RefreshButton loading={loading} generating={generating} onClick={() => void generate()} />
+            <RefreshButton narrowIcon loading={loading} generating={generating} onClick={() => void generate()} />
             <button
               type="button"
               className="inline-flex min-h-8 items-center gap-1 rounded-md border border-transparent px-2 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -274,23 +336,23 @@ function RecapComposerBannerContent({
             </button>
           </div>
         </div>
-        <button
-          type="button"
-          aria-live="polite"
-          className="mt-1 block w-full min-w-0 cursor-pointer rounded-md px-1 py-0.5 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          aria-label={toggleLabel}
-          aria-expanded={expanded}
-          onClick={toggle}
-        >
-          <p className={expanded ? "text-sm leading-5 text-foreground" : "truncate text-sm leading-5 text-foreground"} title={recap.summary}>
-            {recap.summary}
-          </p>
-          {expanded ? (
-            <p className="mt-2 text-xs text-muted-foreground">
-              {recap.model} · {new Date(recap.generatedAt).toLocaleString()}
+        <div aria-live="polite">
+          <button
+            type="button"
+            className="mt-1 block w-full min-w-0 cursor-pointer rounded-md px-1 py-0.5 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-expanded={expanded}
+            onClick={toggle}
+          >
+            <p className={expanded ? "text-sm leading-5 text-foreground" : "truncate text-sm leading-5 text-foreground"} title={recap.summary}>
+              {recap.summary}
             </p>
-          ) : null}
-        </button>
+            {expanded ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {recap.model} · {new Date(recap.generatedAt).toLocaleString()}
+              </p>
+            ) : null}
+          </button>
+        </div>
         {error ? <p role="alert" className="mt-1 px-1 text-xs text-destructive">{error}</p> : null}
       </div>
     );
@@ -336,27 +398,40 @@ function RecapComposerBannerContent({
 const REFRESH_LABELS = ["Refresh", "Loading…", "Generating…"] as const;
 
 /**
- * Below the sm breakpoint the button is a ↻ icon that spins while busy. From
- * sm up every label shares one grid cell and only the current one is visible,
- * so the button keeps the longest label's width and the recap text beside it
- * does not reflow when a background refresh briefly shows "Loading…".
+ * Labels share one grid cell so the button stays as wide as the longest one.
+ * That keeps the "Automatic · time" line beside it from shifting. The compact
+ * header passes narrowIcon and shows a ↻ below the sm breakpoint instead.
  */
-function RefreshButton({ loading, generating, onClick }: { loading: boolean; generating: boolean; onClick: () => void }) {
+function RefreshButton({
+  loading,
+  generating,
+  onClick,
+  narrowIcon = false,
+}: {
+  loading: boolean;
+  generating: boolean;
+  onClick: () => void;
+  narrowIcon?: boolean;
+}) {
   const busy = loading || generating;
   const current = loading ? "Loading…" : generating ? "Generating…" : "Refresh";
   return (
     <button
       type="button"
-      className="inline-flex min-h-8 min-w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 sm:px-2.5"
+      className={narrowIcon
+        ? "inline-flex min-h-8 min-w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 sm:px-2.5"
+        : "inline-flex min-h-8 shrink-0 items-center justify-center rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"}
       aria-label={current}
       title={current}
       onClick={onClick}
       disabled={busy}
     >
-      <span aria-hidden="true" className={busy ? "animate-spin text-sm leading-none sm:hidden" : "text-sm leading-none sm:hidden"}>
-        ↻
-      </span>
-      <span aria-hidden="true" className="hidden sm:grid">
+      {narrowIcon ? (
+        <span aria-hidden="true" className={busy ? "animate-spin text-sm leading-none sm:hidden" : "text-sm leading-none sm:hidden"}>
+          ↻
+        </span>
+      ) : null}
+      <span aria-hidden="true" className={narrowIcon ? "hidden sm:grid" : "grid"}>
         {REFRESH_LABELS.map((label) => (
           <span
             key={label}
