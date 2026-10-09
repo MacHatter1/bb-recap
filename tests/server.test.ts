@@ -15,6 +15,7 @@ async function createHarness(options: {
   timeline?: (args: { threadId: string; beforeAnchorSeq?: string }) => Promise<unknown>;
   wait?: (threadId: string) => Promise<void>;
   database?: Database.Database;
+  listThreads?: (args: { parentThreadId?: string }) => Promise<unknown[]>;
 } = {}) {
   const db = options.database ?? new Database(":memory:");
   const settings = { auto: true, autoCleanup: true, afterSeconds: 86_400, minTurns: 1, maxConcurrent: 1, displayMode: "Compact banner", prompt: "Return a recap." } as RecapSettings;
@@ -23,12 +24,12 @@ async function createHarness(options: {
   let dispose!: () => Promise<void>;
   let handlers!: {
     recap_generate: (input: { threadId: string; automatic: boolean }) => Promise<{ recap: Recap | null; reason: string | null }>;
-    recap_get: (input: { threadId: string }) => Promise<{ generating: boolean }>;
+    recap_get: (input: { threadId: string }) => Promise<{ recap: Recap | null; generating: boolean }>;
     recap_settings_get: () => Promise<RecapSettings>;
     recap_settings_set: (input: RecapSettings) => Promise<RecapSettings>;
     recap_display_mode_set: (input: { displayMode: RecapSettings["displayMode"] }) => Promise<{ displayMode: RecapSettings["displayMode"] }>;
   };
-  const thread = (id: string) => ({ id, projectId: "p", environmentId: null, providerId: "p", status: "idle", visibility: "visible", originPluginId: null });
+  const thread = (id: string) => ({ id, projectId: "p", environmentId: null, providerId: "p", status: "idle", visibility: "visible" as const, originPluginId: null, originKind: null, parentThreadId: null as string | null });
   const bb = {
     pluginId: "bb-recap",
     storage: {
@@ -40,6 +41,7 @@ async function createHarness(options: {
       subscribe: () => () => {},
       threads: {
         get: async ({ threadId }: { threadId: string }) => thread(threadId),
+        list: async (args: { parentThreadId?: string }) => (options.listThreads ?? (async () => []))(args),
         timeline: options.timeline ?? (async ({ threadId }: { threadId: string }) => ({
           rows: [{ id: `${threadId}-user`, kind: "conversation", role: "user", threadId, text: "Work" }],
           timelinePage: { hasOlderRows: false, olderCursor: null },
@@ -55,7 +57,15 @@ async function createHarness(options: {
     realtime: { publish: () => {} }, log: { info: () => {}, warn: () => {} }, onDispose: (callback: typeof dispose) => { dispose = callback; },
   } as unknown as BbPluginApi;
   await plugin(bb);
-  return { db, settings, handlers, spawned, activate: (id: string) => events.get("thread.active")?.({ thread: { ...thread(id), status: "running" } }), close: async () => { await dispose(); db.close(); } };
+  return {
+    db,
+    settings,
+    handlers,
+    spawned,
+    activate: (id: string) => events.get("thread.active")?.({ thread: { ...thread(id), status: "running" } }),
+    emit: (name: string, payload: { thread: Record<string, unknown> }) => events.get(name)?.(payload),
+    close: async () => { await dispose(); db.close(); },
+  };
 }
 
 test("saves Expanded banner and reads it back", async () => {
@@ -192,6 +202,7 @@ test("does not submit a transcript if its thread is hidden during model lookup",
       },
       threads: {
         get: async ({ threadId }: { threadId: string }) => thread(threadId),
+        list: async () => [],
         timeline: async () => ({
           rows: [
             {
@@ -277,5 +288,151 @@ test("does not submit a transcript if its thread is hidden during model lookup",
   } finally {
     for (const dispose of disposers.reverse()) await dispose();
     db.close();
+  }
+});
+
+function listedChild(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "child",
+    status: "active",
+    visibility: "hidden",
+    originKind: null,
+    originPluginId: null,
+    parentThreadId: "parent",
+    archivedAt: null,
+    deletedAt: null,
+    ...overrides,
+  };
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>) {
+  const started = Date.now();
+  while (Date.now() - started < 1_000) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("timed out waiting for recap state");
+}
+
+test("a running child thread keeps its parent active", async () => {
+  let children = [listedChild()];
+  const harness = await createHarness({
+    listThreads: async ({ parentThreadId }) =>
+      children.filter((child) => child.parentThreadId === parentThreadId),
+  });
+  try {
+    await assert.rejects(
+      harness.handlers.recap_generate({ threadId: "parent", automatic: false }),
+      /Running child threads keep it active/,
+    );
+    assert.equal(harness.spawned.length, 0);
+
+    children = [listedChild({ status: "idle" })];
+    assert.ok((await harness.handlers.recap_generate({ threadId: "parent", automatic: false })).recap);
+
+    children = [listedChild({ id: "worker", status: "active", originPluginId: "bb-recap" })];
+    harness.activate("parent");
+    assert.ok((await harness.handlers.recap_generate({ threadId: "parent", automatic: false })).recap);
+
+    children = [listedChild({ status: "active", originKind: "fork" })];
+    harness.activate("parent");
+    assert.ok((await harness.handlers.recap_generate({ threadId: "parent", automatic: false })).recap);
+
+    children = [listedChild({ status: "active", archivedAt: 1 })];
+    harness.activate("parent");
+    assert.ok((await harness.handlers.recap_generate({ threadId: "parent", automatic: false })).recap);
+
+    children = [
+      listedChild({ id: "mid", status: "idle" }),
+      listedChild({ id: "leaf", status: "active", parentThreadId: "mid" }),
+    ];
+    harness.activate("parent");
+    await assert.rejects(
+      harness.handlers.recap_generate({ threadId: "parent", automatic: false }),
+      /Running child threads keep it active/,
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+function idleParent() {
+  return {
+    id: "parent",
+    projectId: "p",
+    environmentId: null,
+    providerId: "p",
+    status: "idle",
+    visibility: "visible" as const,
+    originPluginId: null,
+    originKind: null,
+    parentThreadId: null,
+  };
+}
+
+test("automatic recaps wait until running child threads finish", async () => {
+  let children = [listedChild({ status: "active" })];
+  const harness = await createHarness({
+    listThreads: async ({ parentThreadId }) =>
+      children.filter((child) => child.parentThreadId === parentThreadId),
+  });
+  try {
+    await harness.handlers.recap_settings_set({
+      ...harness.settings,
+      afterSeconds: 0,
+      auto: true,
+      minTurns: 1,
+    });
+    harness.emit("thread.idle", { thread: idleParent() });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(harness.spawned.length, 0);
+
+    children = [];
+    harness.emit("thread.idle", {
+      thread: listedChild({ status: "idle", visibility: "hidden" }),
+    });
+    await waitFor(() => harness.spawned.length === 1);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a child that starts running cancels an in-flight recap until it finishes", async () => {
+  let children: Array<ReturnType<typeof listedChild>> = [];
+  const started = deferred();
+  const release = deferred();
+  const harness = await createHarness({
+    listThreads: async ({ parentThreadId }) =>
+      children.filter((child) => child.parentThreadId === parentThreadId),
+    wait: async (id) => {
+      if (id !== "1") return;
+      started.resolve();
+      await release.promise;
+    },
+  });
+  try {
+    await harness.handlers.recap_settings_set({
+      ...harness.settings,
+      afterSeconds: 0,
+      auto: true,
+      minTurns: 1,
+    });
+    harness.emit("thread.idle", { thread: idleParent() });
+    await started.promise;
+    children = [listedChild({ status: "active" })];
+    harness.emit("thread.active", { thread: listedChild({ status: "active" }) });
+    release.resolve();
+    await waitFor(async () => !(await harness.handlers.recap_get({ threadId: "parent" })).generating);
+    assert.equal((await harness.handlers.recap_get({ threadId: "parent" })).recap, null);
+
+    children = [];
+    harness.emit("thread.idle", {
+      thread: listedChild({ status: "idle", visibility: "hidden" }),
+    });
+    await waitFor(() => harness.spawned.length === 2);
+    await waitFor(async () => (await harness.handlers.recap_get({ threadId: "parent" })).recap !== null);
+  } finally {
+    release.resolve();
+    await harness.close();
   }
 });

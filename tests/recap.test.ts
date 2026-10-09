@@ -28,6 +28,7 @@ import {
   parsePositiveInteger,
   RECAP_DISPLAY_MODES,
   shouldShowRecapBanner,
+  isRunningThreadStatus,
   isVisibleThread,
   clampConcurrentGenerations,
   createGenerationLimiter,
@@ -308,6 +309,16 @@ test("only visible threads are eligible for recaps", () => {
   assert.equal(isVisibleThread("visible"), true);
   assert.equal(isVisibleThread("hidden"), false);
   assert.equal(isVisibleThread(undefined), false);
+});
+
+test("starting, active, and stopping threads are still running", () => {
+  assert.equal(isRunningThreadStatus("starting"), true);
+  assert.equal(isRunningThreadStatus("active"), true);
+  assert.equal(isRunningThreadStatus("stopping"), true);
+  assert.equal(isRunningThreadStatus("idle"), false);
+  assert.equal(isRunningThreadStatus("error"), false);
+  assert.equal(isRunningThreadStatus("pending"), false);
+  assert.equal(isRunningThreadStatus(undefined), false);
 });
 
 test("limits concurrent generation slots and queues the rest", async () => {
