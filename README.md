@@ -67,7 +67,7 @@ When new turns arrive, the next recap uses the previous recap plus those new tur
 
 ### 🪟 Choose a display
 
-Show a compact banner, a larger recap card, or no inline recap until you open the Recap panel.
+Show a compact banner, a banner that opens expanded, a larger recap card, or no inline recap until you open the Recap panel.
 
 </td>
 </tr>

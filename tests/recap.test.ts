@@ -23,6 +23,7 @@ import {
   settingsFormStatusLabel,
   parseBoundedInteger,
   parseClampedInteger,
+  bannerStartsExpanded,
   parseDisplayMode,
   parsePositiveInteger,
   RECAP_DISPLAY_MODES,
@@ -250,7 +251,24 @@ test("bounds settings without accepting invalid values", () => {
     RECAP_DISPLAY_MODES.card,
   );
   assert.equal(parseDisplayMode("compact"), RECAP_DISPLAY_MODES.compact);
+  assert.equal(
+    parseDisplayMode(RECAP_DISPLAY_MODES.expanded),
+    RECAP_DISPLAY_MODES.expanded,
+  );
+  assert.equal(parseDisplayMode("expanded"), RECAP_DISPLAY_MODES.expanded);
   assert.equal(parseDisplayMode("unknown"), RECAP_DISPLAY_MODES.compact);
+  assert.equal(bannerStartsExpanded(RECAP_DISPLAY_MODES.expanded), true);
+  assert.equal(bannerStartsExpanded(RECAP_DISPLAY_MODES.compact), false);
+  assert.equal(bannerStartsExpanded(RECAP_DISPLAY_MODES.card), false);
+  assert.equal(bannerStartsExpanded(RECAP_DISPLAY_MODES.onDemand), false);
+  assert.equal(
+    normalizeRecapSettings({ displayMode: RECAP_DISPLAY_MODES.expanded }).displayMode,
+    RECAP_DISPLAY_MODES.expanded,
+  );
+  assert.equal(
+    normalizeRecapSettings({ displayMode: "expanded" }).displayMode,
+    RECAP_DISPLAY_MODES.expanded,
+  );
   assert.equal(clampConcurrentGenerations(3), 3);
   assert.equal(clampConcurrentGenerations(0), 2);
   assert.equal(clampConcurrentGenerations(99), MAX_CONCURRENT_GENERATIONS);
