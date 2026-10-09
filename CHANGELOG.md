@@ -6,6 +6,8 @@ All notable changes to Recap are documented here. The format follows
 
 ## Unreleased
 
+## 0.2.4 - 2026-10-09
+
 ### Added
 
 - Add an Expanded banner display mode: the compact banner opens expanded and can still be collapsed.
@@ -15,6 +17,8 @@ All notable changes to Recap are documented here. The format follows
 - Move Refresh and Expand/Collapse into the compact banner's header line, so the recap text spans the full banner width below it. On phones that header's Refresh is a ↻ icon that spins while busy, and Expand/Collapse shows only its arrow. The Recap card keeps a text Refresh label.
 - Keep the Refresh label at a fixed width, so the "Automatic · time" line beside it does not reflow while the button briefly reads "Loading…" or "Generating…".
 - Treat a thread as still active while a child thread is starting, active, or stopping, so recaps wait until that work finishes.
+- Hide the previous thread's recap while the next one loads, and reset whether the banner starts open from the display mode.
+- Keep a stored summary on screen when a refresh or generation returns no new recap, and still show the error.
 
 ## 0.2.3 - 2026-10-01
 
