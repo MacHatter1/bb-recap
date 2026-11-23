@@ -5,6 +5,7 @@ Return exactly one plain-text sentence of about 25–40 words, with no heading, 
 export const RECAP_DISPLAY_MODES = {
   compact: "Compact banner",
   expanded: "Expanded banner",
+  minimal: "Minimal",
   card: "Recap card",
   onDemand: "On demand",
 } as const;
@@ -16,6 +17,7 @@ export const RECAP_DISPLAY_MODE_OPTIONS: RecapDisplayMode[] = [
   RECAP_DISPLAY_MODES.compact,
   RECAP_DISPLAY_MODES.expanded,
   RECAP_DISPLAY_MODES.card,
+  RECAP_DISPLAY_MODES.minimal,
   RECAP_DISPLAY_MODES.onDemand,
 ];
 
@@ -24,6 +26,7 @@ export function parseDisplayMode(raw: string): RecapDisplayMode {
     return raw as RecapDisplayMode;
   if (raw === "compact") return RECAP_DISPLAY_MODES.compact;
   if (raw === "expanded") return RECAP_DISPLAY_MODES.expanded;
+  if (raw === "minimal") return RECAP_DISPLAY_MODES.minimal;
   if (raw === "card") return RECAP_DISPLAY_MODES.card;
   if (raw === "on-demand") return RECAP_DISPLAY_MODES.onDemand;
   return RECAP_DISPLAY_MODES.compact;

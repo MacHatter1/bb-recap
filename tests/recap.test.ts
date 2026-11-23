@@ -256,6 +256,7 @@ test("bounds settings without accepting invalid values", () => {
     RECAP_DISPLAY_MODES.expanded,
   );
   assert.equal(parseDisplayMode("expanded"), RECAP_DISPLAY_MODES.expanded);
+  assert.equal(parseDisplayMode("minimal"), RECAP_DISPLAY_MODES.minimal);
   assert.equal(parseDisplayMode("unknown"), RECAP_DISPLAY_MODES.compact);
   assert.equal(bannerStartsExpanded(RECAP_DISPLAY_MODES.expanded), true);
   assert.equal(bannerStartsExpanded(RECAP_DISPLAY_MODES.compact), false);

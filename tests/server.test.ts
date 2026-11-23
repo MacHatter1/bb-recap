@@ -68,16 +68,18 @@ async function createHarness(options: {
   };
 }
 
-test("saves Expanded banner and reads it back", async () => {
-  const harness = await createHarness();
-  try {
-    const saved = await harness.handlers.recap_display_mode_set({ displayMode: "Expanded banner" });
-    assert.equal(saved.displayMode, "Expanded banner");
-    assert.equal((await harness.handlers.recap_settings_get()).displayMode, "Expanded banner");
-  } finally {
-    await harness.close();
-  }
-});
+for (const displayMode of ["Expanded banner", "Minimal"] as const) {
+  test(`saves ${displayMode} and reads it back`, async () => {
+    const harness = await createHarness();
+    try {
+      const saved = await harness.handlers.recap_display_mode_set({ displayMode });
+      assert.equal(saved.displayMode, displayMode);
+      assert.equal((await harness.handlers.recap_settings_get()).displayMode, displayMode);
+    } finally {
+      await harness.close();
+    }
+  });
+}
 
 test("disabling automatic recaps prevents queued requests from spawning", async () => {
   const started = deferred();
