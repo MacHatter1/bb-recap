@@ -276,6 +276,17 @@ function RecapComposerBannerContent({
     setExpanded(bannerStartsExpanded(mode));
   }, [mode, recap?.id, threadId]);
 
+  if (mode === RECAP_DISPLAY_MODES.minimal) {
+    const text = recap?.summary ?? (generating ? "Generating recap…" : null);
+    if (!text && !error) return null;
+    return (
+      <div className="min-w-0 break-words border-b border-solid border-border px-2 pb-1 text-xs leading-5 text-muted-foreground">
+        {text ? <p aria-live="polite"><em>Recap: {text}</em></p> : null}
+        {error ? <p role="alert" className="text-destructive">{error}</p> : null}
+      </div>
+    );
+  }
+
   if (!recap) {
     if (!generating) {
       if (!error) return null;
@@ -496,7 +507,9 @@ function DisplayModePreview({
         <span className="text-xs text-muted-foreground">{selected ? "Current" : "Preview"}</span>
       </div>
       <div className="mt-3 rounded-md bg-background p-2" aria-hidden="true">
-        {mode === RECAP_DISPLAY_MODES.compact ? (
+        {mode === RECAP_DISPLAY_MODES.minimal ? (
+          <p className="border-b border-solid border-border px-2 pb-1 text-xs leading-5 text-muted-foreground"><em>Recap: A short summary of this thread.</em></p>
+        ) : mode === RECAP_DISPLAY_MODES.compact ? (
           <div className="space-y-2 rounded-lg border border-border bg-surface-recessed/20 p-2">
             <div className="flex items-center gap-2">
               <div className="h-5 w-5 shrink-0 rounded-md bg-muted" />

@@ -6,6 +6,10 @@ All notable changes to Recap are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- Choose Minimal in display settings to show the recap as italic text above the composer, with a divider underneath.
+
 ## 0.2.4 - 2026-10-09
 
 ### Added

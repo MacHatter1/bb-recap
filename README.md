@@ -67,7 +67,7 @@ When new turns arrive, the next recap uses the previous recap plus those new tur
 
 ### 🪟 Choose a display
 
-Show a compact banner, a banner that opens expanded, a larger recap card, or no inline recap until you open the Recap panel.
+Show a compact banner, a banner that opens expanded, a larger recap card, an italic summary with a divider (**Minimal**), or no inline recap until you open the Recap panel.
 
 </td>
 </tr>
@@ -80,6 +80,7 @@ Show a compact banner, a banner that opens expanded, a larger recap card, or no 
 <td align="center"><img src="output/playwright/showcase/25-natural-expanded-banner.png" alt="Expanded recap banner with a fictional launch-planning summary" width="440"><br><sub><b>Expanded banner</b></sub></td>
 </tr>
 <tr>
+<td align="center"><img src="output/playwright/showcase/minimal-banner.png" alt="Italic recap text with a divider below it" width="440"><br><sub><b>Minimal</b></sub></td>
 <td align="center"><img src="output/playwright/showcase/17-settings-focus-tall.png" alt="Recap behaviour settings with model, automatic generation, cleanup, and display previews" width="440"><br><sub><b>Model, behaviour, and display settings</b></sub></td>
 </tr>
 </table>
